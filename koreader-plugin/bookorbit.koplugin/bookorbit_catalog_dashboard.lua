@@ -258,6 +258,14 @@ function CatalogDashboard:dashboardRoot(opts)
                 params.readStatus = "reading"
             elseif DashboardSections.isCatalogSelector(config.type) then
                 for key, value in pairs(config.params or {}) do params[key] = value end
+                -- The dashboard stores the selected source, while catalog
+                -- ordering is a user preference shared with the browser. Do
+                -- not let the source's original picker order reset it after
+                -- the dashboard is reopened.
+                if config.type ~= "series" then
+                    params.sort = self.default_sort or params.sort
+                end
+                if self.default_order then params.order = self.default_order end
             else
                 return nil
             end

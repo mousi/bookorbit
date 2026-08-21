@@ -254,6 +254,8 @@ function BookOrbitCatalog:init()
     self.grid_rows = self:sanitizeGridValue(self.settings.catalog_grid_rows, DEFAULT_GRID_ROWS)
     self.mosaic_show_titles = self.settings.catalog_mosaic_show_titles == true
     self.default_sort = self.settings.catalog_sort or "recently_added"
+    self.default_order = (self.settings.catalog_order == "asc" or self.settings.catalog_order == "desc")
+        and self.settings.catalog_order or nil
     self.list_rows = self:computeListRows()
     self.on_device = {}
     self.on_device_files = {}
@@ -993,7 +995,7 @@ function BookOrbitCatalog:titleForSection(section)
 end
 
 function BookOrbitCatalog:paramsForEntry(section, entry)
-    local params = { sort = "title" }
+    local params = { sort = self.default_sort or "title" }
     if section == "libraries" then
         params.libraryId = tonumber(entry.id)
     elseif section == "collections" then
@@ -1296,7 +1298,9 @@ function BookOrbitCatalog:showSortDialog(item)
                     params.order = nil
                     params.page = 1
                     self.default_sort = sort.id
+                    self.default_order = NATURAL_ORDER[sort.id]
                     self:persistSetting("catalog_sort", sort.id)
+                    self:persistSetting("catalog_order", self.default_order)
                     self:loadBooks(params, item.title or _("Books"), false)
                 end,
             },
@@ -1313,6 +1317,8 @@ function BookOrbitCatalog:reverseOrder()
     self:applyToCurrentBooks(function(params)
         local current = self:effectiveOrder(params)
         params.order = current == "asc" and "desc" or "asc"
+        self.default_order = params.order
+        self:persistSetting("catalog_order", self.default_order)
     end)
 end
 
@@ -1322,7 +1328,7 @@ end
 
 function BookOrbitCatalog:effectiveOrder(query)
     local sort = query.sort or "recently_added"
-    return query.order or NATURAL_ORDER[sort] or "asc"
+    return query.order or self.default_order or NATURAL_ORDER[sort] or "asc"
 end
 
 function BookOrbitCatalog:directionLabel(query)

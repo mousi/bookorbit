@@ -106,6 +106,7 @@ BookOrbit.default_settings = {
     sync_backward = SYNC_STRATEGY.DISABLE,
     catalog_view_mode = "mosaic",
     catalog_sort = "recently_added",
+    catalog_order = nil,
     catalog_grid_cols = 4,
     catalog_grid_rows = 3,
     catalog_mosaic_show_titles = false,
