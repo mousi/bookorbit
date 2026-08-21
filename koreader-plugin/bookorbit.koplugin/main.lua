@@ -106,6 +106,7 @@ BookOrbit.default_settings = {
     sync_backward = SYNC_STRATEGY.DISABLE,
     catalog_view_mode = "mosaic",
     catalog_sort = "recently_added",
+    catalog_sort_preferences = {},
     catalog_grid_cols = 4,
     catalog_grid_rows = 3,
     catalog_mosaic_show_titles = false,
@@ -1096,6 +1097,7 @@ function BookOrbit:openCatalogBrowser(prefer_cached_dashboard)
         path = self.path,
         prefer_cached_dashboard = prefer_cached_dashboard,
         save_settings = function()
+            G_reader_settings:saveSetting("bookorbit", self.settings)
             G_reader_settings:flush()
         end,
         show_dashboard_menu = function(catalog)

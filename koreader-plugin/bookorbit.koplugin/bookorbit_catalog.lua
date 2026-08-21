@@ -254,6 +254,8 @@ function BookOrbitCatalog:init()
     self.grid_rows = self:sanitizeGridValue(self.settings.catalog_grid_rows, DEFAULT_GRID_ROWS)
     self.mosaic_show_titles = self.settings.catalog_mosaic_show_titles == true
     self.default_sort = self.settings.catalog_sort or "recently_added"
+    self.sort_preferences = type(self.settings.catalog_sort_preferences) == "table"
+        and self.settings.catalog_sort_preferences or {}
     self.list_rows = self:computeListRows()
     self.on_device = {}
     self.on_device_files = {}
@@ -494,6 +496,40 @@ function BookOrbitCatalog:persistSetting(key, value)
     end
 end
 
+function BookOrbitCatalog:sortPreferenceKey(params)
+    params = params or {}
+    if params.smartScopeId then return "smart-scope:" .. tostring(params.smartScopeId) end
+    if params.libraryId then return "library:" .. tostring(params.libraryId) end
+    if params.collectionId then return "collection:" .. tostring(params.collectionId) end
+    if params.author then return "author:" .. tostring(params.author) end
+    if params.seriesId then return "series-id:" .. tostring(params.seriesId) end
+    if params.series then return "series:" .. tostring(params.series) end
+    if params.ids then return nil end
+    return "all-books"
+end
+
+function BookOrbitCatalog:sortPreference(params)
+    local key = self:sortPreferenceKey(params)
+    local preferences = self.sort_preferences or {}
+    local preference = key and preferences[key]
+    if type(preference) ~= "table" then return {} end
+    return {
+        sort = SORT_LABELS[preference.sort] and preference.sort or nil,
+        order = (preference.order == "asc" or preference.order == "desc") and preference.order or nil,
+    }
+end
+
+function BookOrbitCatalog:saveSortPreference(params)
+    local key = self:sortPreferenceKey(params)
+    if not key then return end
+    self.sort_preferences = self.sort_preferences or {}
+    self.sort_preferences[key] = {
+        sort = params.sort,
+        order = self:effectiveOrder(params),
+    }
+    self:persistSetting("catalog_sort_preferences", self.sort_preferences)
+end
+
 function BookOrbitCatalog:refreshOnDevice()
     local cached_ok, cached = pcall(BookOrbitStateManager.hasOnDeviceMaps)
     if not cached_ok or not cached then
@@ -699,7 +735,7 @@ function BookOrbitCatalog:rootItems()
             table.insert(items, {
                 text = section.title,
                 kind = "books",
-                params = { sort = "title" },
+                params = {},
             })
         else
             table.insert(items, {
@@ -993,7 +1029,7 @@ function BookOrbitCatalog:titleForSection(section)
 end
 
 function BookOrbitCatalog:paramsForEntry(section, entry)
-    local params = { sort = "title" }
+    local params = {}
     if section == "libraries" then
         params.libraryId = tonumber(entry.id)
     elseif section == "collections" then
@@ -1010,6 +1046,9 @@ function BookOrbitCatalog:paramsForEntry(section, entry)
         end
         params.sort = "series"
     end
+    local preference = self:sortPreference(params)
+    params.sort = preference.sort or params.sort or self.default_sort
+    params.order = preference.order
     return params
 end
 
@@ -1019,8 +1058,16 @@ function BookOrbitCatalog:fetchBookPage(params, title, push)
     local query = cloneParams(params)
     query.page = query.page or 1
     query.size = self:itemsPerPage()
-    query.sort = query.sort or self.default_sort or "recently_added"
+    local preference = self:sortPreference(query)
+    local preference_key = self:sortPreferenceKey(query)
+    local scoped_preference = preference_key and preference_key ~= "all-books"
+    if scoped_preference and preference.sort then query.sort = preference.sort end
+    query.sort = query.sort or preference.sort or self.default_sort or "recently_added"
+    if scoped_preference and preference.order then query.order = preference.order end
     query.order = self:effectiveOrder(query)
+    if preference_key and type((self.sort_preferences or {})[preference_key]) ~= "table" then
+        self:saveSortPreference(query)
+    end
 
     local body, err = self:fetch(_("Loading books..."), function()
         return self.client:catalogBooks(query)
@@ -1297,6 +1344,7 @@ function BookOrbitCatalog:showSortDialog(item)
                     params.page = 1
                     self.default_sort = sort.id
                     self:persistSetting("catalog_sort", sort.id)
+                    self:saveSortPreference(params)
                     self:loadBooks(params, item.title or _("Books"), false)
                 end,
             },
@@ -1310,10 +1358,15 @@ function BookOrbitCatalog:showSortDialog(item)
 end
 
 function BookOrbitCatalog:reverseOrder()
-    self:applyToCurrentBooks(function(params)
-        local current = self:effectiveOrder(params)
-        params.order = current == "asc" and "desc" or "asc"
-    end)
+    local context = self.current_context or {}
+    if context.kind ~= "books" then return false end
+    local params = cloneParams(context.params or {})
+    local current = self:effectiveOrder(params)
+    params.order = current == "asc" and "desc" or "asc"
+    self:saveSortPreference(params)
+    params.page = 1
+    self:loadBooks(params, context.title or _("Books"), false)
+    return true
 end
 
 function BookOrbitCatalog:sortLabel(sort_id)
@@ -1322,7 +1375,8 @@ end
 
 function BookOrbitCatalog:effectiveOrder(query)
     local sort = query.sort or "recently_added"
-    return query.order or NATURAL_ORDER[sort] or "asc"
+    local preference = self:sortPreference(query)
+    return query.order or preference.order or NATURAL_ORDER[sort] or "asc"
 end
 
 function BookOrbitCatalog:directionLabel(query)
