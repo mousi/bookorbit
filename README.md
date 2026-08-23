@@ -103,7 +103,7 @@ The BookOrbit plugin for KOReader adds progress sync, two-way annotation sync, a
 
 ![BookOrbit KOReader Plugin showing dashboard, catalog search, and book details](docs/images/koreader-plugin-preview.png)
 
-1. In BookOrbit, go to **Settings > Integrations > KOReader** and click **Download Plugin**.
+1. In BookOrbit, go to **Settings > KOReader**, create credentials if prompted, and click **Download Plugin**.
 2. Unzip `bookorbit.koplugin.zip`.
 3. Copy `bookorbit.koplugin` to `koreader/plugins/` on the device.
 4. Restart KOReader and open a book.
@@ -115,6 +115,9 @@ The download is pre-configured with your server URL and credentials, so there is
 
 Full documentation is at **[bookorbit.app](https://bookorbit.app/what-is-bookorbit)**, covering libraries, metadata, readers, Kobo sync, OPDS, users and permissions, OIDC setup, and more.
 
+For a one-time import from Audiobookshelf, see the [Audiobookshelf migration guide](docs/AUDIOBOOKSHELF_MIGRATION.md).
+For a stopped-snapshot import from Calibre-Web Automated, see the
+[Calibre-Web Automated migration guide](docs/CALIBRE_WEB_AUTOMATED_MIGRATION.md).
 For local development, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). To contribute, see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full workflow: branch naming, test expectations, PR checklist, and commit format.
 
 ## Repository Activity

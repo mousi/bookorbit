@@ -26,7 +26,8 @@ vi.mock('drizzle-orm', () => {
   };
 });
 
-vi.mock('../../common/utils/accent-insensitive-search.utils', () => ({
+vi.mock('../../common/utils/accent-insensitive-search.utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../common/utils/accent-insensitive-search.utils')>()),
   accentInsensitiveIlike: vi.fn((left: unknown, pattern: string) => ({ type: 'accentInsensitiveIlike', left, pattern })),
 }));
 
@@ -1769,6 +1770,9 @@ describe('BookQueryBuilder.buildCollapseOrderBy', () => {
     expect(result).toContain('rp.user_id = 7');
     expect(result).toContain('bf.book_id = r.id');
     expect(result).toContain('ASC NULLS LAST');
+    // Must aggregate last_read_at; rp.updated_at is frozen by the KOReader sync path.
+    expect(result).toContain('SELECT max(rp.last_read_at)');
+    expect(result).not.toContain('max(rp.updated_at)');
   });
 
   it('generates user-scoped subquery for finishedAt', () => {

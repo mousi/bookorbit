@@ -127,6 +127,7 @@ function makeStats(overrides: Partial<BookReadingSessionStats> = {}): BookReadin
     paceProgressDelta: 0,
     paceDurationSeconds: 0,
     progressSummary: [],
+    latestEndProgress: null,
     bySource: [],
     ...overrides,
   }
@@ -188,6 +189,28 @@ describe('ReadingLogHero', () => {
     expect(wrapper.emitted('saved')?.[0]).toEqual([updated])
   })
 
+  it('allows a finish date to complete an unread book', async () => {
+    const updated = makeReadStatus({ status: 'read', startedAt: null, finishedAt: '2026-04-20' })
+    mocks.updateStatus.mockResolvedValue(updated)
+    const wrapper = mountHero(makeBook({ readStatus: makeReadStatus({ status: 'unread', startedAt: null, finishedAt: null }) }))
+    await flushPromises()
+
+    const finishButton = wrapper
+      .findAll('button')
+      .filter((button) => button.text() === 'Not set')
+      .at(-1)
+    expect(finishButton).toBeDefined()
+    await finishButton!.trigger('click')
+    await wrapper.find('input[type="date"]').setValue('2026-04-20')
+    await wrapper.find('input[type="date"]').trigger('blur')
+    await flushPromises()
+
+    expect(mocks.updateStatus).toHaveBeenCalledWith(10, { finishedAt: '2026-04-20' })
+    expect(wrapper.text()).toContain('Read')
+    expect(wrapper.text()).toContain('Apr 20, 2026')
+    expect(wrapper.emitted('saved')?.[0]).toEqual([updated])
+  })
+
   it('validates lifecycle dates before saving', async () => {
     const wrapper = mountHero()
     await flushPromises()
@@ -215,7 +238,7 @@ describe('ReadingLogHero', () => {
     await invalidWrapper.find('input[type="date"]').trigger('blur')
     await flushPromises()
 
-    expect(invalidWrapper.text()).toContain('Finish date must be on or after the start date.')
+    expect(invalidWrapper.text()).toContain('Finish date must be on or after the start date (Apr 1, 2026).')
 
     mocks.updateStatus.mockRejectedValue(new Error('save failed'))
     const failedWrapper = mountHero()
@@ -228,6 +251,20 @@ describe('ReadingLogHero', () => {
     await flushPromises()
 
     expect(failedWrapper.text()).toContain('Failed to save reading dates.')
+  })
+
+  it('maps stable server date errors to localized copy', async () => {
+    mocks.updateStatus.mockRejectedValue(Object.assign(new Error('rejected'), { errorCode: 'READING_DATE_STARTED_IN_FUTURE' }))
+    const wrapper = mountHero()
+    await flushPromises()
+
+    const startButton = wrapper.findAll('button').find((button) => button.text() === 'Apr 1, 2026')
+    await startButton!.trigger('click')
+    await wrapper.find('input[type="date"]').setValue('2026-04-02')
+    await wrapper.find('input[type="date"]').trigger('blur')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Start date cannot be in the future.')
   })
 
   it('closes lifecycle date editing when unchanged or canceled', async () => {
@@ -393,6 +430,71 @@ describe('ReadingLogHero', () => {
     const noPaceWrapper = mountHero(makeBook(), makeStats({ paceProgressDelta: 0, paceDurationSeconds: 3600 }))
     await flushPromises()
     expect(noPaceWrapper.text()).not.toContain('to finish')
+  })
+
+  it('shows logged session progress for a book with no stored reading position', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 0 }]))
+    const wrapper = mountHero(makeBook(), makeStats({ latestEndProgress: 100 }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('100%')
+  })
+
+  it('keeps the stored reading position when it is further along than the logged sessions', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 70 }]))
+    const wrapper = mountHero(makeBook(), makeStats({ latestEndProgress: 40 }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('70%')
+  })
+
+  it('prefers logged session progress when it is further along than the stored position', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 12 }]))
+    const wrapper = mountHero(makeBook(), makeStats({ latestEndProgress: 65 }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('65%')
+  })
+
+  it('ignores absent and malformed logged session progress', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 30 }]))
+    const nullWrapper = mountHero(makeBook(), makeStats({ latestEndProgress: null }))
+    await flushPromises()
+    expect(nullWrapper.text()).toContain('30%')
+
+    const nanWrapper = mountHero(makeBook(), makeStats({ latestEndProgress: Number.NaN }))
+    await flushPromises()
+    expect(nanWrapper.text()).toContain('30%')
+  })
+
+  it('clamps logged session progress into the 0-100 range', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 0 }]))
+    const wrapper = mountHero(makeBook(), makeStats({ latestEndProgress: 140 }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('100%')
+  })
+
+  it('updates the ring when a new session arrives without refetching the reading position', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 0 }]))
+    const wrapper = mountHero(makeBook(), makeStats({ latestEndProgress: null }))
+    await flushPromises()
+    expect(wrapper.text()).toContain('0%')
+
+    const callsBefore = mocks.api.mock.calls.length
+    await wrapper.setProps({ stats: makeStats({ latestEndProgress: 55 }) })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('55%')
+    expect(mocks.api.mock.calls).toHaveLength(callsBefore)
+  })
+
+  it('drops the eta once logged sessions reach the end of the book', async () => {
+    mocks.api.mockResolvedValue(makeResponse([{ fileId: 1, percentage: 0 }]))
+    const wrapper = mountHero(makeBook(), makeStats({ latestEndProgress: 100, paceProgressDelta: 50, paceDurationSeconds: 3600 }))
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('to finish')
   })
 
   it('falls back to zero progress when progress loading fails', async () => {

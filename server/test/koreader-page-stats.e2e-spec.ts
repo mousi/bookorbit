@@ -1,9 +1,12 @@
+import { copyFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
-import { and, asc, eq, like } from 'drizzle-orm';
+import { join } from 'path';
+import { and, asc, eq, gte, like } from 'drizzle-orm';
 
 import * as schema from '../src/db/schema';
 import {
   KOREADER_SESSION_GAP_SECONDS,
+  buildSessionId,
   buildSessionIdPrefix,
   deriveKoreaderSessions,
   type KoreaderPageEvent,
@@ -26,6 +29,8 @@ const KOREADER_PASSWORD = 'PageStatsDevicePass123';
 const DEVICE_ID = 'e2e-stats-0001';
 const BASE_EPOCH = 1_780_000_000;
 const TOTAL_PAGES = 300;
+/** Mirrors POWER_HOUR_PAGES in the reading evaluator. */
+const POWER_HOUR_PAGES = 75;
 
 /** A contiguous run of one-minute page reads starting at `startEpoch`. */
 function cluster(startEpoch: number, pages: number, firstPage: number): KoreaderPageEvent[] {
@@ -41,6 +46,7 @@ describe('KOReader page stats derivation (e2e)', { timeout: 180_000 }, () => {
   let ctx!: ReaderStateIsolationE2EContext;
   let library!: CreatedLibrary;
   let epub!: LocatedBookFile;
+  let epubPath!: string;
   let fileHash!: string;
 
   function deviceHeaders(): Record<string, string> {
@@ -98,6 +104,28 @@ describe('KOReader page stats derivation (e2e)', { timeout: 180_000 }, () => {
       }));
   }
 
+  async function hasAchievement(userId: number, key: string): Promise<boolean> {
+    const rows = await ctx.db
+      .select({ key: schema.userAchievements.achievementKey })
+      .from(schema.userAchievements)
+      .where(and(eq(schema.userAchievements.userId, userId), eq(schema.userAchievements.achievementKey, key)));
+    return rows.length > 0;
+  }
+
+  /** Achievement evaluation is fire-and-forget off the upload response, so the award lands after it. */
+  async function waitForAchievement(userId: number, key: string, timeoutMs = 20_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await hasAchievement(userId, key)) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  function pagesFor(progressDelta: number | null): number {
+    return ((progressDelta ?? 0) / 100) * TOTAL_PAGES;
+  }
+
   function comparable(rows: Awaited<ReturnType<typeof storedSessions>>) {
     return rows.map((row) => ({
       sessionId: row.sessionId,
@@ -112,7 +140,7 @@ describe('KOReader page stats derivation (e2e)', { timeout: 180_000 }, () => {
   beforeAll(async () => {
     ctx = await createReaderStateIsolationE2EContext();
     library = await createLibraryWithFolder(ctx, { name: `koreader-page-stats-${randomUUID()}` });
-    const epubPath = await createEpubFixture(library.folderPath, 'page-stats-book.epub', {
+    epubPath = await createEpubFixture(library.folderPath, 'page-stats-book.epub', {
       title: `Page Stats Book ${randomUUID()}`,
       uid: `urn:uuid:${randomUUID()}`,
     });
@@ -202,5 +230,65 @@ describe('KOReader page stats derivation (e2e)', { timeout: 180_000 }, () => {
     const noop = await uploadPageStats(resumed);
     expect(noop.results[0]!.accepted).toBe(0);
     expect(await storedSessions()).toEqual(complete);
+  });
+
+  it('unlocks a session achievement when a later batch grows a stored session past its threshold', async () => {
+    const metadata = await ctx.db
+      .update(schema.bookMetadata)
+      .set({ pageCount: TOTAL_PAGES })
+      .where(eq(schema.bookMetadata.bookId, epub.bookId))
+      .returning({ bookId: schema.bookMetadata.bookId });
+    expect(metadata).toHaveLength(1);
+
+    const opening = cluster(BASE_EPOCH + 13_000_000, 40, 1);
+    await uploadPageStats(opening);
+
+    const sessionId = buildSessionId(DEVICE_ID, epub.bookFileId, opening[0]!.startTime);
+    const [session] = await ctx.db
+      .select({ userId: schema.readingSessions.userId, progressDelta: schema.readingSessions.progressDelta })
+      .from(schema.readingSessions)
+      .where(eq(schema.readingSessions.sessionId, sessionId));
+    expect(session).toBeTruthy();
+    expect(pagesFor(session!.progressDelta)).toBeLessThan(POWER_HOUR_PAGES);
+    expect(await hasAchievement(session!.userId, 'power_hour')).toBe(false);
+
+    // Resumes within the session gap, so the stored session grows under its existing id instead of
+    // being inserted again: the update path that previously emitted no achievement event.
+    const continued = cluster(opening.at(-1)!.startTime + 60, 45, opening.at(-1)!.page + 1);
+    await uploadPageStats(continued);
+
+    const grown = (await storedSessions()).filter((row) => row.startedAt.getTime() >= (BASE_EPOCH + 13_000_000) * 1000);
+    expect(grown).toHaveLength(1);
+    expect(grown[0]!.sessionId).toBe(sessionId);
+    expect(pagesFor(grown[0]!.progressDelta)).toBeGreaterThanOrEqual(POWER_HOUR_PAGES);
+
+    expect(await waitForAchievement(session!.userId, 'power_hour')).toBe(true);
+  });
+
+  // A file hash is not unique: identical bytes in two places are two book file rows. The resolver
+  // has to land on the same one every time, or a device's statistics split across both and the
+  // plugin sees its sync target move, which discards its local upload cursor.
+  it('resolves a hash shared by two book files to the same row on every upload', async () => {
+    const duplicatePath = join(library.folderPath, 'page-stats-book-copy.epub');
+    await copyFile(epubPath, duplicatePath);
+    await triggerAndWaitForLibraryScan(ctx, library.libraryId);
+
+    const sharing = await ctx.db
+      .select({ id: schema.bookFiles.id })
+      .from(schema.bookFiles)
+      .where(eq(schema.bookFiles.fileHash, fileHash))
+      .orderBy(asc(schema.bookFiles.id));
+    expect(sharing.length).toBeGreaterThan(1);
+    expect(sharing[0]!.id).toBe(epub.bookFileId);
+
+    const firstStart = BASE_EPOCH + 20_000_000;
+    await uploadPageStats([{ page: 1, startTime: firstStart, durationSeconds: 55, totalPages: TOTAL_PAGES }]);
+    await uploadPageStats([{ page: 2, startTime: firstStart + 60, durationSeconds: 55, totalPages: TOTAL_PAGES }]);
+
+    const targets = await ctx.db
+      .selectDistinct({ bookFileId: schema.koreaderPageStats.bookFileId })
+      .from(schema.koreaderPageStats)
+      .where(and(eq(schema.koreaderPageStats.deviceId, DEVICE_ID), gte(schema.koreaderPageStats.startTime, firstStart)));
+    expect(targets.map((row) => row.bookFileId)).toEqual([epub.bookFileId]);
   });
 });

@@ -1,7 +1,7 @@
-ARG NODE_IMAGE=node:24.11-alpine@sha256:682368d8253e0c3364b803956085c456a612d738bd635926d73fa24db3ce53d7
+ARG NODE_IMAGE=node:26.7.0-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019
 
 FROM ${NODE_IMAGE} AS base
-RUN npm install -g pnpm@10.33.4
+RUN npm install -g pnpm@11.22.0
 
 # Stage 1: Build client
 FROM base AS client-builder
@@ -16,7 +16,13 @@ RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
 
 COPY packages/ ./packages/
 COPY client/ ./client/
-RUN pnpm --filter client run build-only
+# pnpm 11 defaults verifyDepsBeforeRun to "install", so running a script
+# re-installs first. Each stage installed its own filtered subset with a frozen
+# lockfile two steps up, and no stage carries the whole workspace, so that
+# re-install is both redundant and wrong: it resolves against a partial
+# workspace. In the server stage it is fatal, because client/ is absent and the
+# @embedpdf patches then look unused.
+RUN pnpm --config.verify-deps-before-run=false --filter client run build-only
 
 # Stage 2: Build server + create deploy bundle
 FROM base AS server-builder
@@ -31,7 +37,7 @@ RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
 
 COPY packages/ ./packages/
 COPY server/ ./server/
-RUN pnpm --filter server run build
+RUN pnpm --config.verify-deps-before-run=false --filter server run build
 
 # pnpm deploy prunes to prod deps; dist/ is gitignored so copy it in after.
 RUN pnpm --config.allow-unused-patches=true --filter server deploy --prod --legacy /deploy
@@ -49,10 +55,14 @@ ENV KOREADER_PLUGIN_PATH=/app/koreader-plugin/bookorbit.koplugin
 
 COPY server/requirements/kobo-cloudscraper.txt /tmp/kobo-cloudscraper-requirements.txt
 
+# pip is build-only here. Leaving it installed also leaves pip/_vendor/vendor.txt,
+# which Trivy reads as installed msgpack and setuptools and fails the image scan on.
 RUN apk upgrade --no-cache && \
     apk add --no-cache poppler-utils su-exec ffmpeg python3 py3-pip tini && \
     python3 -m venv /opt/bookorbit-python && \
     /opt/bookorbit-python/bin/python -m pip install --no-cache-dir -r /tmp/kobo-cloudscraper-requirements.txt && \
+    /opt/bookorbit-python/bin/python -m pip uninstall -y pip && \
+    apk del py3-pip && \
     rm -f /tmp/kobo-cloudscraper-requirements.txt && \
     rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 

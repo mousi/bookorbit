@@ -22,12 +22,26 @@ const BCRYPT_ROUNDS = 12;
 const SYNC_EVENT = 'koreader.sync';
 const CREDENTIALS_EVENT = 'koreader.credentials';
 const DEVICE_REMOVE_EVENT = 'koreader.device_remove';
+const DEVICE_RETIRE_EVENT = 'koreader.device_retire';
 const FILE_NAMING_EVENT = 'koreader.file_naming';
 const DEFAULT_DEVICE = 'KOReader';
 const FILE_NAMING_CACHE_TTL_MS = 30_000;
 const FILE_NAMING_CACHE_MAX_ENTRIES = 5_000;
 const SHARED_PROGRESS_CONCURRENCY = 4;
 const CHAPTER_EXTRACTION_CONCURRENCY = 2;
+const RESET_DEVICE = 'web';
+const RESET_DEVICE_ID = 'bookorbit-web';
+/** The start of a paged document, in the page-number form KOReader sends for those formats. */
+const RESET_PAGED_POSITION = '1';
+/** The start of a reflowable document, in the same xpointer shape the web branch synthesises. */
+const RESET_REFLOWABLE_POSITION = '/body/DocFragment[1]/body';
+/**
+ * Only used when a device reports no position at all. A percentage cannot carry this on its
+ * own: page 1 of a hundred-page comic already reads as 1%, so any threshold tight enough to
+ * mean "the start" of a long book would never be reachable on a short one, and that device
+ * would stay held forever.
+ */
+const RESET_CONVERGED_PERCENTAGE_FALLBACK = 0.01;
 
 /** `format` routes the incoming position to the cfi or the pageNumber column. */
 export interface KoreaderProgressBookFile {
@@ -190,10 +204,58 @@ export class KoreaderService {
       syncTimestamp: data.timestamp ?? null,
     });
 
+    // A retired device that syncs again is back in service. Clearing the marker keeps it
+    // visible rather than letting activity accrue against a device the user cannot see.
+    await this.repo.restoreDevice(userId, data.deviceId);
+
     if (options?.skipSharedProgress) return;
+
+    if (!(await this.resolveResetHold(userId, bookFile, data))) return;
 
     const previousPercentage = previousDeviceProgress?.percentage != null ? toBookorbitPercentage(previousDeviceProgress.percentage) : null;
     await this.applySharedProgress(userId, bookFile, data, previousPercentage);
+  }
+
+  /**
+   * Decides whether a pushed position may move shared progress while a reset is outstanding.
+   *
+   * The push clock cannot answer this. KOReader stamps a push with the time it sends it, not
+   * the time the position was reached, so a device replaying a position from before the reset
+   * looks exactly as recent as one that genuinely read on afterwards. What separates them is
+   * whether that device has been observed at the reset position since the reset was made.
+   *
+   * The judgement is per device. Serving the reset proves nothing, because both clients can
+   * classify it as a backward sync and drop it without telling anyone, so only the device's
+   * own push counts, and one device converging says nothing about the others.
+   */
+  private async resolveResetHold(
+    userId: number,
+    bookFile: KoreaderProgressBookFile,
+    data: { percentage: number; progress?: string; device: string; deviceId: string },
+  ): Promise<boolean> {
+    const resetAt = await this.repo.getProgressReset(bookFile.id, userId);
+    if (!resetAt) return true;
+
+    const atStart = isResetStartPosition(bookFile.format, data.percentage, data.progress);
+    const converged = await this.repo.getConvergedResetDeviceIds(bookFile.id, userId);
+    if (converged.has(data.deviceId)) {
+      // This device took the reset and has since read on, so the reset has done its work and
+      // must stop being served. The pull carries no device identity, so a marker kept alive
+      // for some other device would be answered to this one too, and it would be asked to
+      // jump back to the start on every sync for the rest of the book.
+      if (!atStart) await this.repo.clearProgressReset(bookFile.id, userId);
+      return true;
+    }
+
+    if (atStart) {
+      await this.repo.recordResetConvergence(bookFile.id, userId, data.deviceId);
+      return true;
+    }
+
+    this.logger.log(
+      `[${SYNC_EVENT}] [end] userId=${userId} bookFileId=${bookFile.id} device="${sanitizeLogValue(data.device)}" deviceId="${sanitizeLogValue(data.deviceId)}" percentage=${data.percentage} resetAt=${resetAt.toISOString()} held=true - device position recorded but held behind a pending reset`,
+    );
+    return false;
   }
 
   /**
@@ -211,13 +273,15 @@ export class KoreaderService {
     userId: number,
     entries: BulkProgressEntry[],
     device: { device: string; deviceId: string },
-  ): Promise<{ shared: number; stale: number }> {
-    if (entries.length === 0) return { shared: 0, stale: 0 };
+  ): Promise<{ shared: number; stale: number; held: number }> {
+    if (entries.length === 0) return { shared: 0, stale: 0, held: 0 };
 
     const bookFileIds = entries.map((entry) => entry.bookFile.id);
-    const [deviceRows, readerUpdatedAt] = await Promise.all([
+    const [deviceRows, readerUpdatedAt, resets, convergedByFile] = await Promise.all([
       this.repo.getDeviceProgressForFiles(bookFileIds, userId),
       this.repo.getReadingProgressUpdatedAtForFiles(bookFileIds, userId),
+      this.repo.getProgressResetsForFiles(bookFileIds, userId),
+      this.repo.getConvergedResetDeviceIdsForFiles(bookFileIds, userId),
     ]);
 
     const appliedAt = new Date();
@@ -246,7 +310,7 @@ export class KoreaderService {
       // sees what a sequential apply would have seen.
       state.ownDeviceNewest = entry.timestamp ?? appliedAtSeconds;
       state.latestPercentage = entry.percentage;
-      return { entry, stale, previousPercentage };
+      return { entry, stale, previousPercentage, heldByReset: false };
     });
 
     const deviceUpserts = new Map<number, DeviceProgressUpsert>();
@@ -263,8 +327,36 @@ export class KoreaderService {
       });
     }
     await this.repo.upsertDeviceProgressMany([...deviceUpserts.values()], appliedAt);
+    await this.repo.restoreDevice(userId, device.deviceId);
 
-    const shared = plans.filter((plan) => !plan.stale);
+    // A sweep carries the device's whole shelf, so a book the user reset in BookOrbit shows up
+    // here holding its pre-reset sidecar position. Same judgement as a single push, for the one
+    // device this sweep speaks for.
+    const convergedResetFileIds = new Set<number>();
+    const retiredResetFileIds = new Set<number>();
+    for (const plan of plans) {
+      if (plan.stale) continue;
+      const bookFileId = plan.entry.bookFile.id;
+      if (!resets.get(bookFileId)) continue;
+      const atStart = isResetStartPosition(plan.entry.bookFile.format, plan.entry.percentage, plan.entry.progress);
+      if (convergedByFile.get(bookFileId)?.has(device.deviceId)) {
+        if (!atStart) retiredResetFileIds.add(bookFileId);
+        continue;
+      }
+      if (atStart) convergedResetFileIds.add(bookFileId);
+      else plan.heldByReset = true;
+    }
+    for (const bookFileId of convergedResetFileIds) await this.repo.recordResetConvergence(bookFileId, userId, device.deviceId);
+    for (const bookFileId of retiredResetFileIds) await this.repo.clearProgressReset(bookFileId, userId);
+
+    const held = plans.filter((plan) => plan.heldByReset).length;
+    if (held > 0) {
+      this.logger.log(
+        `[${SYNC_EVENT}] [end] userId=${userId} deviceId="${sanitizeLogValue(device.deviceId)}" held=${held} - bulk positions recorded but held behind pending resets`,
+      );
+    }
+
+    const shared = plans.filter((plan) => !plan.stale && !plan.heldByReset);
     // Chapter extraction parses an EPUB per file, so it stays off the request path as it
     // does for a single sync, but bounded instead of one unawaited call per item.
     const extractionFileIds = [...new Set(shared.map((plan) => plan.entry.bookFile.id))];
@@ -291,7 +383,7 @@ export class KoreaderService {
       }
     });
 
-    return { shared: shared.length, stale: plans.length - shared.length };
+    return { shared: shared.length, stale: plans.filter((plan) => plan.stale).length, held };
   }
 
   private async applySharedProgress(
@@ -346,6 +438,34 @@ export class KoreaderService {
 
     if (!bookFile) return null;
 
+    // An outstanding reset is answered before anything stored, and answered with a position
+    // rather than with silence. An empty body reads as "this server knows nothing about your
+    // book", which is the one reply that leaves the device certain its own position is the
+    // only one there is, and it pushes it back. Zero attributed to BookOrbit is a position the
+    // device can act on, and the plugin's default forward strategy puts it to the reader.
+    const resetAt = await this.repo.getProgressReset(bookFile.id, userId);
+    if (resetAt) {
+      this.logger.log(
+        `[${SYNC_EVENT}] [end] userId=${userId} bookFileId=${bookFile.id} resetAt=${resetAt.toISOString()} - reset position served to device`,
+      );
+      return {
+        document: documentHash,
+        percentage: 0,
+        // A real position, not an empty string: KOReader's own kosync plugin feeds this
+        // straight to GotoPage or GotoXPointer with no percentage fallback, so an empty value
+        // leaves it sitting exactly where it was. This is also the position a converged push
+        // has to report back, so what we ask for and what we accept are the same thing.
+        progress: isPagedReadingFormat(bookFile.format) ? RESET_PAGED_POSITION : RESET_REFLOWABLE_POSITION,
+        device: RESET_DEVICE,
+        device_id: RESET_DEVICE_ID,
+        // Stamped now rather than when the user reset, because a live marker is a standing
+        // instruction. Both clients compare this against their last page turn and default
+        // backward syncs to disabled, so the original time would lose that comparison on any
+        // pull deferred past a page turn, and be discarded without ever prompting.
+        timestamp: Math.floor(Date.now() / 1000),
+      };
+    }
+
     const latestDevice = await this.repo.getLatestDeviceProgress(bookFile.id, userId);
     const readingProg = await this.repo.getReadingProgress(bookFile.id, userId);
 
@@ -391,7 +511,7 @@ export class KoreaderService {
   }
 
   async getSyncStatus(userId: number): Promise<KoreaderSyncStatus> {
-    const [credentials, deviceRows, deviceSettings, totalSyncedBooks, sweepRows, pluginTotals, versionInfo] = await Promise.all([
+    const [credentials, deviceRows, deviceSettings, totalSyncedBooks, sweepRows, pluginTotals, versionInfo, retirements] = await Promise.all([
       this.getCredentials(userId),
       this.repo.getDevicesList(userId),
       this.repo.getDeviceFileNamingPatterns(userId),
@@ -399,9 +519,11 @@ export class KoreaderService {
       this.pluginRepo.listSweeps(userId),
       this.pluginRepo.getPluginTotals(userId),
       this.packageService.getVersionInfo(),
+      this.repo.listRetiredDeviceIds(userId),
     ]);
     const devices = this.mapDevices(deviceRows, deviceSettings);
-    const lastSyncAt = devices.length > 0 ? devices[0]!.lastSyncAt : null;
+    // Rows are ordered newest first, so the first active device is the last sync that still counts.
+    const lastSyncAt = devices.find((device) => device.retiredAt === null)?.lastSyncAt ?? null;
     const latestPluginVersion = versionInfo.pluginVersion === 'unknown' ? null : versionInfo.pluginVersion;
     const settingsByDevice = new Map(deviceSettings.map((setting) => [setting.deviceId, setting]));
     const sweeps = sweepRows.map((row) => {
@@ -417,12 +539,13 @@ export class KoreaderService {
         lastSweepBooksMatched: row.lastSweepBooksMatched,
         lastSweepPageStats: row.lastSweepPageStats,
         lastSweepAnnotations: row.lastSweepAnnotations,
+        retiredAt: retirements.get(row.deviceId)?.toISOString() ?? null,
         fileNamingPattern: setting?.fileNamingPattern ?? null,
         seriesFileNamingPattern: setting?.seriesFileNamingPattern ?? null,
         standaloneFileNamingPattern: setting?.standaloneFileNamingPattern ?? null,
       };
     });
-    const pluginUpdateAvailable = sweeps.some((sweep) => sweep.updateAvailable === true);
+    const pluginUpdateAvailable = sweeps.some((sweep) => sweep.retiredAt === null && sweep.updateAvailable === true);
 
     return { credentials, devices, totalSyncedBooks, lastSyncAt, latestPluginVersion, pluginUpdateAvailable, sweeps, pluginTotals };
   }
@@ -444,6 +567,7 @@ export class KoreaderService {
         deviceId: r.deviceId,
         lastSyncAt: r.lastSyncAt.toISOString(),
         lastBookTitle: r.lastBookTitle,
+        retiredAt: r.retiredAt?.toISOString() ?? null,
         fileNamingPattern: setting?.fileNamingPattern ?? null,
         seriesFileNamingPattern: setting?.seriesFileNamingPattern ?? null,
         standaloneFileNamingPattern: setting?.standaloneFileNamingPattern ?? null,
@@ -547,6 +671,30 @@ export class KoreaderService {
     );
   }
 
+  /**
+   * Retiring hides a decommissioned device without touching a byte of what it synced.
+   * Restoring is the same call with `retired: false`, and a device that syncs again
+   * restores itself.
+   */
+  async setDeviceRetired(userId: number, deviceId: string, retired: boolean): Promise<void> {
+    const startedAt = Date.now();
+    const safeDeviceId = sanitizeLogValue(deviceId);
+
+    if (!(await this.repo.deviceExists(userId, deviceId))) {
+      this.logger.warn(
+        `[${DEVICE_RETIRE_EVENT}] [fail] userId=${userId} deviceId="${safeDeviceId}" retired=${retired} durationMs=${Date.now() - startedAt} errorClass=NotFoundException error="device not found" - set device retired failed`,
+      );
+      throw new NotFoundException('KOReader device not found');
+    }
+
+    if (retired) await this.repo.retireDevice(userId, deviceId);
+    else await this.repo.restoreDevice(userId, deviceId);
+
+    this.logger.log(
+      `[${DEVICE_RETIRE_EVENT}] [end] userId=${userId} deviceId="${safeDeviceId}" retired=${retired} durationMs=${Date.now() - startedAt} - set device retired completed`,
+    );
+  }
+
   private fileNamingCacheScope(userId: number): string {
     return `koreader-file-naming:${userId}`;
   }
@@ -559,13 +707,22 @@ export class KoreaderService {
     if (deviceProgress.length === 0 && !readingProgress) return null;
 
     const chapters = await this.repo.getChapters(bookFileId);
-    const latestDevice = deviceProgress[0];
-    const deviceTime = latestDevice?.updatedAt?.getTime() ?? 0;
     const readerTime = readingProgress?.updatedAt?.getTime() ?? 0;
 
-    const isKoreaderLatest = latestDevice && deviceTime >= readerTime;
-    const canonicalPercentage = isKoreaderLatest ? toBookorbitPercentage(latestDevice.percentage ?? 0) : (readingProgress?.percentage ?? 0);
-    const canonicalChapterIndex = isKoreaderLatest ? (latestDevice.chapterIndex ?? null) : null;
+    // A held device's row can be newer than everything else and still not be the canonical
+    // position, because it is a position the user asked to discard. Scoped to the devices
+    // actually being held: once a device takes the reset, its reading counts again even though
+    // the marker stays live for whichever devices have not.
+    const resetAt = await this.repo.getProgressReset(bookFileId, userId);
+    const convergedDeviceIds = resetAt ? await this.repo.getConvergedResetDeviceIds(bookFileId, userId) : null;
+    const isHeld = (deviceId: string) => convergedDeviceIds !== null && !convergedDeviceIds.has(deviceId);
+    const heldDevices = deviceProgress.filter((dp) => isHeld(dp.deviceId));
+    const liveDevice = deviceProgress.find((dp) => !isHeld(dp.deviceId));
+    const liveDeviceTime = liveDevice?.updatedAt?.getTime() ?? 0;
+    const isKoreaderLatest = liveDevice && liveDeviceTime >= readerTime;
+    const canonicalPercentage = isKoreaderLatest ? toBookorbitPercentage(liveDevice.percentage ?? 0) : (readingProgress?.percentage ?? 0);
+    const canonicalTime = isKoreaderLatest ? Math.max(liveDeviceTime, readerTime) : readerTime;
+    const canonicalChapterIndex = isKoreaderLatest ? (liveDevice.chapterIndex ?? null) : null;
 
     const lastWriteTime = await this.repo.getLastFileWriteTime(bookFileId);
     const fileModifiedSinceLastSync =
@@ -582,7 +739,7 @@ export class KoreaderService {
       canonicalChapterIndex,
       canonicalChapterTitle: canonicalChapterIndex != null ? (chapters.find((c) => c.chapterIndex === canonicalChapterIndex)?.title ?? null) : null,
       canonicalSource: isKoreaderLatest ? 'koreader' : 'web_reader',
-      canonicalUpdatedAt: new Date(Math.max(deviceTime, readerTime)).toISOString(),
+      canonicalUpdatedAt: new Date(canonicalTime).toISOString(),
       devices: deviceProgress.map((dp) => ({
         device: dp.device,
         deviceId: dp.deviceId,
@@ -592,8 +749,72 @@ export class KoreaderService {
         updatedAt: dp.updatedAt!.toISOString(),
       })),
       fileModifiedSinceLastSync,
+      heldByReset: heldDevices.map((dp) => ({
+        device: dp.device,
+        deviceId: dp.deviceId,
+        percentage: toBookorbitPercentage(dp.percentage ?? 0),
+        updatedAt: dp.updatedAt!.toISOString(),
+      })),
     };
   }
+
+  /**
+   * Accepts a held device's position and stops holding it. The reader answered the prompt on
+   * the device and said no, and without this the only ways out are reading the book in
+   * BookOrbit or resetting again, neither of which is reachable from seeing the hold.
+   */
+  async releaseResetHold(userId: number, bookId: number, deviceId: string): Promise<void> {
+    const startedAt = Date.now();
+    const accessibleLibraryIds = await this.repo.getAccessibleLibraryIds(userId);
+    const bookFile = await this.repo.findProgressBookFileByBookId(bookId, accessibleLibraryIds);
+    if (!bookFile) throw new NotFoundException(`No synced file found for book ${bookId}`);
+
+    const held = await this.repo.getDeviceProgressForDevice(bookFile.id, userId, deviceId);
+    if (!held) throw new NotFoundException(`No KOReader progress found for device on book ${bookId}`);
+
+    // Checked before writing, so a hold released twice, or released as the device converges on
+    // its own, answers with a plain 404 rather than tripping the marker's foreign key.
+    if ((await this.repo.getProgressReset(bookFile.id, userId)) === null) {
+      throw new NotFoundException(`No pending reset for book ${bookId}`);
+    }
+
+    // Retired outright rather than recorded as convergence: the reader has said this position
+    // is the one they want, so leaving the marker live would have the next pull answer zero
+    // and ask the same device to go back to the start again.
+    await this.repo.clearProgressReset(bookFile.id, userId);
+    await this.applySharedProgress(
+      userId,
+      bookFile,
+      { percentage: held.percentage ?? 0, progress: held.progress ?? undefined, timestamp: held.syncTimestamp ?? undefined },
+      null,
+    );
+
+    this.logger.log(
+      `[${SYNC_EVENT}] [end] userId=${userId} bookFileId=${bookFile.id} deviceId="${sanitizeLogValue(deviceId)}" durationMs=${Date.now() - startedAt} - reset hold released to the device position`,
+    );
+  }
+}
+
+/**
+ * Whether a reported position is the start of the book, which is what a device landing on a
+ * reset looks like. Routed by format because KOReader describes the two kinds of document
+ * differently, and judged on the position rather than the percentage wherever one is sent.
+ */
+export function isResetStartPosition(format: string | null | undefined, percentage: number, progress?: string | null): boolean {
+  if (isPagedReadingFormat(format)) {
+    const page = parseKoreaderPageNumber(progress);
+    if (page !== null) return page <= 1;
+  } else {
+    const trimmed = progress?.trim();
+    // The percentage has to agree for a reflowable book. An EPUB with a single spine item puts
+    // every position in the first fragment, so the fragment alone would call a device converged
+    // wherever it happens to be sitting. Paged formats need no such guard, because a page
+    // number says exactly where the reader is however short the book.
+    if (trimmed) {
+      return /^\/body\/DocFragment\[1\](\/|$)/.test(trimmed) && percentage <= RESET_CONVERGED_PERCENTAGE_FALLBACK;
+    }
+  }
+  return percentage <= RESET_CONVERGED_PERCENTAGE_FALLBACK;
 }
 
 function toBookorbitPercentage(koreaderPct: number): number {

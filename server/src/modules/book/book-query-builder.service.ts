@@ -16,7 +16,7 @@ import type {
 import { DB } from '../../db';
 import { isDateKey, resolveTimeZone, toDateKeyInTimeZone } from '../../common/utils/timezone.utils';
 import { buildContentFilterClauses } from '../../common/utils/content-filter-sql.utils';
-import { accentInsensitiveIlike } from '../../common/utils/accent-insensitive-search.utils';
+import { accentInsensitiveIlike, buildSearchPattern, escapeLikePattern } from '../../common/utils/accent-insensitive-search.utils';
 import * as schema from '../../db/schema';
 import { BookSortBuilder, customMetadataValueColumn, type BookSortContext } from './book-sort-builder.service';
 import {
@@ -91,7 +91,7 @@ export class BookQueryBuilder {
   }
 
   buildQuickSearch(q: string): SQL {
-    const pattern = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
+    const pattern = buildSearchPattern(q);
 
     const existsAuthor = (() => {
       const sq = this.db
@@ -836,9 +836,9 @@ export class BookQueryBuilder {
   private upNextInSeriesSql(userId: number): SQL {
     const mergedProgress = sql`coalesce(
       case
-        when rp.updated_at is null then ab.percentage
+        when rp.last_read_at is null then ab.percentage
         when ab.updated_at is null then rp.percentage
-        when rp.updated_at >= ab.updated_at then rp.percentage
+        when rp.last_read_at >= ab.updated_at then rp.percentage
         else ab.percentage
       end,
       rp.percentage,
@@ -1126,7 +1126,7 @@ export class BookQueryBuilder {
           break;
         case 'lastReadAt':
           parts.push(
-            `(SELECT max(rp.updated_at) FROM reading_progress rp INNER JOIN book_files bf ON rp.book_file_id = bf.id WHERE bf.book_id = r.id AND rp.user_id = ${safeUserId}) ${D} NULLS LAST`,
+            `(SELECT max(rp.last_read_at) FROM reading_progress rp INNER JOIN book_files bf ON rp.book_file_id = bf.id WHERE bf.book_id = r.id AND rp.user_id = ${safeUserId}) ${D} NULLS LAST`,
           );
           break;
         case 'finishedAt':
@@ -1156,8 +1156,4 @@ export class BookQueryBuilder {
     parts.push('r.id ASC');
     return parts.join(', ');
   }
-}
-
-function escapeLikePattern(s: string): string {
-  return s.replace(/[\\%_]/g, '\\$&');
 }

@@ -1,7 +1,7 @@
 import { BookRepository } from './book.repository';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { bookMetadata, books } from '../../db/schema';
+import { audiobookProgress, bookMetadata, books, koreaderDeviceProgress, koreaderProgressResets, readingProgress } from '../../db/schema';
 
 function makeSelectChain<T>(terminalMethod: string, terminalResult: T) {
   const chain: Record<string, vi.Mock> = {
@@ -823,7 +823,9 @@ describe('BookRepository', () => {
     const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
     const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
     const insert = vi.fn().mockReturnValue({ values });
-    const db = { insert };
+    const resetWhere = vi.fn().mockResolvedValue(undefined);
+    const del = vi.fn().mockReturnValue({ where: resetWhere });
+    const db = { insert, delete: del };
     const repo = new BookRepository(db as never);
 
     await repo.upsertProgress(
@@ -981,12 +983,20 @@ describe('BookRepository', () => {
     expect(insertedBookmark).not.toHaveProperty('ContentSourceProgressPercent');
   });
 
-  it('advances Kobo reading state percent-only without a KoboSpan location, preserving the existing Location', async () => {
+  // Keeping the device Location while the percent moves ships a bookmark that contradicts
+  // itself, and the device resumes from Location: it opens at the stale spot and pushes that
+  // percent back. The reading-state pull path re-adds a Location whenever it can convert the cfi.
+  it('drops the stale device Location when percent-only progress advances past it', async () => {
     const insertChain = makeInsertChain();
     const existingState = {
       entitlementId: 'ent-1',
       createdAtKobo: '2026-06-01T00:00:00.000Z',
-      currentBookmark: { ProgressPercent: 40, Location: { Source: 'OEBPS/old.xhtml', Type: 'KoboSpan', Value: 'kobo.5.1' } },
+      currentBookmark: {
+        ProgressPercent: 40,
+        ContentSourceProgressPercent: 61,
+        ChapterProgress: 3,
+        Location: { Source: 'OEBPS/old.xhtml', Type: 'KoboSpan', Value: 'kobo.5.1' },
+      },
       statistics: null,
       statusInfo: null,
     };
@@ -1005,8 +1015,84 @@ describe('BookRepository', () => {
     expect(db.insert).toHaveBeenCalledTimes(1);
     const inserted = insertChain.values.mock.calls[0][0] as { currentBookmark: Record<string, unknown> };
     expect(inserted.currentBookmark.ProgressPercent).toBe(80);
-    expect(inserted.currentBookmark.Location).toEqual({ Source: 'OEBPS/old.xhtml', Type: 'KoboSpan', Value: 'kobo.5.1' });
+    expect(inserted.currentBookmark).not.toHaveProperty('Location');
+    expect(inserted.currentBookmark).not.toHaveProperty('ContentSourceProgressPercent');
+    expect(inserted.currentBookmark.ChapterProgress).toBe(3);
+    const updated = insertChain.onConflictDoUpdate.mock.calls[0][0] as { set: { currentBookmark: Record<string, unknown> } };
+    expect(updated.set.currentBookmark).not.toHaveProperty('Location');
     expect(db.execute).toHaveBeenCalled();
+  });
+
+  // A Kobo clock running ahead is stored verbatim from the device push. A hub write stamped at
+  // wall-clock time lands behind it, loses the device conflict check, and never reaches the reader.
+  it('stamps the reading state past device timestamps sitting in the future', async () => {
+    const insertChain = makeInsertChain();
+    const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const existingState = {
+      entitlementId: 'ent-1',
+      createdAtKobo: '2026-06-01T00:00:00.000Z',
+      lastModifiedKobo: future,
+      priorityTimestamp: future,
+      currentBookmark: { ProgressPercent: 40, LastModified: future },
+      statistics: null,
+      statusInfo: { LastModified: future, Status: 'Reading' },
+    };
+    const db = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce(makeSelectChain('limit', [{ bookId: 10, primaryFileId: 9, format: 'epub', markAsFinishedPercentComplete: 98 }]))
+        .mockReturnValueOnce(makeSelectChain('limit', [existingState])),
+      insert: vi.fn().mockReturnValue(insertChain),
+      execute: vi.fn().mockResolvedValue(undefined),
+    };
+    const repo = new BookRepository(db as never);
+
+    await expect(repo.syncKoboReadingStateFromProgress(5, 9, 80, null, null, null, null)).resolves.toBe(true);
+
+    const inserted = insertChain.values.mock.calls[0][0] as {
+      lastModifiedKobo: string;
+      priorityTimestamp: string;
+      currentBookmark: { LastModified: string };
+      statusInfo: { LastModified: string };
+    };
+    const futureMs = new Date(future).getTime();
+    expect(new Date(inserted.lastModifiedKobo).getTime()).toBeGreaterThan(futureMs);
+    expect(new Date(inserted.priorityTimestamp).getTime()).toBeGreaterThan(futureMs);
+    expect(new Date(inserted.currentBookmark.LastModified).getTime()).toBeGreaterThan(futureMs);
+    expect(new Date(inserted.statusInfo.LastModified).getTime()).toBeGreaterThan(futureMs);
+  });
+
+  it('stamps the reading state at wall-clock time when no stored timestamp is ahead of it', async () => {
+    const insertChain = makeInsertChain();
+    const before = Date.now();
+    const db = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce(makeSelectChain('limit', [{ bookId: 10, primaryFileId: 9, format: 'epub', markAsFinishedPercentComplete: 98 }]))
+        .mockReturnValueOnce(
+          makeSelectChain('limit', [
+            {
+              entitlementId: 'ent-1',
+              createdAtKobo: '2026-06-01T00:00:00.000Z',
+              lastModifiedKobo: '2026-06-01T00:00:00.000Z',
+              priorityTimestamp: '2026-06-01T00:00:00.000Z',
+              currentBookmark: { ProgressPercent: 40, LastModified: '2026-06-01T00:00:00.000Z' },
+              statistics: null,
+              statusInfo: null,
+            },
+          ]),
+        ),
+      insert: vi.fn().mockReturnValue(insertChain),
+      execute: vi.fn().mockResolvedValue(undefined),
+    };
+    const repo = new BookRepository(db as never);
+
+    await repo.syncKoboReadingStateFromProgress(5, 9, 80, null, null, null, null);
+
+    const inserted = insertChain.values.mock.calls[0][0] as { lastModifiedKobo: string };
+    const stampedMs = new Date(inserted.lastModifiedKobo).getTime();
+    expect(stampedMs).toBeGreaterThanOrEqual(before);
+    expect(stampedMs).toBeLessThanOrEqual(Date.now());
   });
 
   it('skips the percent-only Kobo reading state write when the bookmark percent is current', async () => {
@@ -1101,20 +1187,140 @@ describe('BookRepository', () => {
     await expect(repo.isKoboTwoWayProgressSyncEnabled(6)).resolves.toBe(false);
   });
 
-  it('clears both reading_progress and audiobook_progress rows for a file id', async () => {
-    const readingWhere = vi.fn().mockResolvedValue(undefined);
-    const audioWhere = vi.fn().mockResolvedValue(undefined);
-    const del = vi.fn().mockReturnValueOnce({ where: readingWhere }).mockReturnValueOnce({ where: audioWhere });
-    const db = {
+  function makeClearProgressDb(file: { bookId: number; primaryFileId: number } | undefined, koboState: Record<string, unknown> | undefined) {
+    const deleted: unknown[] = [];
+    const inserted: unknown[] = [];
+    const updated: unknown[] = [];
+    const executed: unknown[] = [];
+
+    const del = vi.fn().mockImplementation((table: unknown) => ({
+      where: vi.fn().mockImplementation(() => {
+        deleted.push(table);
+        return Promise.resolve(undefined);
+      }),
+    }));
+    // Recorded at values() so it captures both a plain insert and a chained upsert.
+    const insert = vi.fn().mockImplementation((table: unknown) => ({
+      values: vi.fn().mockImplementation((rows: unknown) => {
+        inserted.push({ table, rows });
+        return Object.assign(Promise.resolve(undefined), {
+          onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+        });
+      }),
+    }));
+    const update = vi.fn().mockImplementation((table: unknown) => ({
+      set: vi.fn().mockImplementation((patch: unknown) => ({
+        where: vi.fn().mockImplementation(() => {
+          updated.push({ table, patch });
+          return Promise.resolve(undefined);
+        }),
+      })),
+    }));
+    const execute = vi.fn().mockImplementation((statement: unknown) => {
+      executed.push(statement);
+      return Promise.resolve(undefined);
+    });
+
+    // clearFileProgress looks the file up outside the transaction; inside it, the Kobo reset
+    // reads the existing reading state and clearBookProgress lists the book's files.
+    const select = vi
+      .fn()
+      .mockImplementation(() => makeSelectChain('limit', koboState ? [koboState] : []))
+      .mockImplementationOnce(() => makeSelectChain('limit', file ? [file] : []));
+
+    const tx = {
       delete: del,
+      insert,
+      update,
+      execute,
+      select: vi.fn().mockImplementation(() => makeSelectChain('limit', koboState ? [koboState] : [])),
     };
+    const db = {
+      select,
+      delete: del,
+      insert,
+      update,
+      execute,
+      transaction: vi.fn().mockImplementation(async (cb: (t: unknown) => Promise<void>) => cb(tx)),
+    };
+    return { db, tx, deleted, inserted, updated, executed };
+  }
+
+  it('clears reading, audio and KOReader device rows for a file id and records the reset', async () => {
+    const { db, deleted, inserted } = makeClearProgressDb({ bookId: 3, primaryFileId: 99 }, undefined);
     const repo = new BookRepository(db as never);
 
     await repo.clearFileProgress(7, 99);
 
-    expect(del).toHaveBeenCalledTimes(2);
-    expect(readingWhere).toHaveBeenCalledTimes(1);
-    expect(audioWhere).toHaveBeenCalledTimes(1);
+    expect(deleted).toEqual([readingProgress, audiobookProgress, koreaderDeviceProgress, koreaderProgressResets]);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toEqual({ table: koreaderProgressResets, rows: [{ userId: 7, bookFileId: 99 }] });
+  });
+
+  it('leaves the Kobo bookmark alone when the cleared file is not the book primary', async () => {
+    const { db, updated } = makeClearProgressDb({ bookId: 3, primaryFileId: 42 }, { lastModifiedKobo: '2026-01-01T00:00:00Z' });
+    const repo = new BookRepository(db as never);
+
+    await repo.clearFileProgress(7, 99);
+
+    expect(updated).toEqual([]);
+  });
+
+  it('winds the Kobo bookmark back to the start when the primary file is cleared', async () => {
+    const { db, updated, executed } = makeClearProgressDb({ bookId: 3, primaryFileId: 99 }, { lastModifiedKobo: '2026-01-01T00:00:00Z' });
+    const repo = new BookRepository(db as never);
+
+    await repo.clearFileProgress(7, 99);
+
+    expect(updated).toHaveLength(1);
+    const patch = (updated[0] as { patch: Record<string, unknown> }).patch;
+    expect(patch.currentBookmark).toEqual(expect.objectContaining({ ProgressPercent: 0 }));
+    expect(patch.statusInfo).toEqual(expect.objectContaining({ Status: 'ReadyToRead', TimesStartedReading: 0 }));
+    // A Kobo bookmark only wins on a strictly newer timestamp, so the reset has to advance past
+    // whatever the device last reported rather than stamping wall clock over it.
+    expect(String(patch.lastModifiedKobo) > '2026-01-01T00:00:00Z').toBe(true);
+    expect(executed).toHaveLength(1);
+  });
+
+  it('records a reset for every file of a book', async () => {
+    const { db, inserted, deleted } = makeClearProgressDb(undefined, undefined);
+    const repo = new BookRepository(db as never);
+    db.transaction = vi.fn().mockImplementation(async (cb: (t: unknown) => Promise<void>) =>
+      cb({
+        ...db,
+        select: vi
+          .fn()
+          .mockImplementation(() => makeSelectChain('limit', []))
+          .mockImplementationOnce(() => makeSelectChain('where', [{ id: 11 }, { id: 12 }])),
+      }),
+    ) as never;
+
+    await repo.clearBookProgress(7, 3);
+
+    expect(deleted).toEqual([readingProgress, audiobookProgress, koreaderDeviceProgress, koreaderProgressResets]);
+    expect(inserted).toEqual([
+      {
+        table: koreaderProgressResets,
+        rows: [
+          { userId: 7, bookFileId: 11 },
+          { userId: 7, bookFileId: 12 },
+        ],
+      },
+    ]);
+  });
+
+  it('retires a pending reset when the web reader writes progress back', async () => {
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn().mockReturnValue({ values: vi.fn().mockReturnValue({ onConflictDoUpdate }) });
+    const resetWhere = vi.fn().mockResolvedValue(undefined);
+    const del = vi.fn().mockReturnValue({ where: resetWhere });
+    const repo = new BookRepository({ insert, delete: del } as never);
+
+    await repo.upsertProgress(5, 9, 'epubcfi(/6/2)', null, 40);
+
+    expect(del).toHaveBeenCalledWith(koreaderProgressResets);
+    expect(resetWhere).toHaveBeenCalledTimes(1);
   });
 
   describe('temporal jump buckets', () => {
@@ -1171,6 +1377,8 @@ describe('BookRepository', () => {
 
       const query = dialect.sqlToQuery(execute.mock.calls[0]![0]).sql;
       expect(query).toContain('rail_last_read AS MATERIALIZED');
+      expect(query).toContain('max(rail_rp.last_read_at)');
+      expect(query).not.toContain('rail_rp.updated_at');
       expect(query).toContain('GROUP BY rail_bf.book_id');
       expect(query).toContain('base_rows AS MATERIALIZED');
       expect(query).toContain('representatives AS');

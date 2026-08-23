@@ -20,6 +20,8 @@ import { MetadataPreferencesService } from '../metadata-preferences/metadata-pre
 import { SeriesExpectedCountService } from '../../common/services/series-expected-count.service';
 import { applyGenreFetchOptions, createGenreBlocklistTokenSet } from '../../common/utils/genre-fetch-options.utils';
 import { normalizeMetadataText, normalizeMetadataTextKey } from '../../common/utils/metadata-text-normalize.utils';
+import { sanitizeLogValue } from '../../common/utils/log-sanitize.utils';
+import { resolveCandidateAgreement } from './candidate-agreement';
 import { MetadataFetchService } from './metadata-fetch.service';
 import { ProviderRegistry } from './provider-registry';
 import { ProviderThrottleTracker } from './provider-throttle.tracker';
@@ -130,7 +132,7 @@ export class MetadataFetchPipeline {
       ? { ...params, includeAudiobookProviders: true }
       : params;
     const candidates = providerSelection.activeProviders.length
-      ? await firstValueFrom(this.fetchService.search(searchParams, providerSelection.activeProviders).pipe(toArray()), {
+      ? await firstValueFrom(this.fetchService.searchCandidates(searchParams, providerSelection.activeProviders).pipe(toArray()), {
           defaultValue: [] as MetadataCandidate[],
         })
       : [];
@@ -145,9 +147,59 @@ export class MetadataFetchPipeline {
     for (const c of candidates) {
       if (!byProvider.has(c.provider)) byProvider.set(c.provider, c);
     }
-    const { resolved, sources, providerIds } = this.applyPreferences(preferences, byProvider, existingFields, params.existingProviderIds, options);
-    const diagnostics = this.buildDiagnostics(providerSelection, candidates, resolved);
+
+    const agreeing = this.rejectDisagreeingCandidates(preferences, providerSelection.activeProviders, byProvider, params);
+    const { resolved, sources, providerIds } = this.applyPreferences(preferences, agreeing, existingFields, params.existingProviderIds, options);
+    const diagnostics = this.buildDiagnostics(providerSelection, [...agreeing.values()], resolved);
     return { resolved, sources, providerIds, diagnostics };
+  }
+
+  /**
+   * Drops candidates that describe a different book from the anchor, before field rules get to
+   * source individual fields from them. Without this, every provider that matched the wrong book
+   * still contributes whichever fields it ranks first for, and the result is one record assembled
+   * out of several books.
+   */
+  private rejectDisagreeingCandidates(
+    preferences: MetadataFetchPreferences,
+    activeProviders: readonly MetadataProviderKey[],
+    byProvider: ReadonlyMap<string, MetadataCandidate>,
+    params: MetadataSearchParams,
+  ): Map<string, MetadataCandidate> {
+    const ordered = this.orderByIdentityTrust(preferences, activeProviders, byProvider);
+    const { anchor, accepted, rejected } = resolveCandidateAgreement(ordered, params);
+
+    if (rejected.length > 0) {
+      this.logger.warn(
+        `[metadata_fetch.candidate_agreement] [end] anchorProvider=${anchor?.provider ?? 'none'} acceptedCount=${accepted.length} rejectedProviders=${rejected.map((candidate) => candidate.provider).join('|')} anchorTitle="${sanitizeLogValue(anchor?.title ?? '')}" rejectedTitles="${sanitizeLogValue(rejected.map((candidate) => candidate.title ?? '').join('|'))}" - candidates describing a different book were dropped`,
+      );
+    }
+
+    return new Map(accepted.map((candidate) => [candidate.provider, candidate]));
+  }
+
+  /**
+   * Candidates ordered by how far each provider is trusted to establish which book this is. The
+   * title rule leads because that is where the user declares that authority; arrival order cannot
+   * be used, since providers resolve as a race.
+   */
+  private orderByIdentityTrust(
+    preferences: MetadataFetchPreferences,
+    activeProviders: readonly MetadataProviderKey[],
+    byProvider: ReadonlyMap<string, MetadataCandidate>,
+  ): MetadataCandidate[] {
+    const ordered: MetadataCandidate[] = [];
+    const seen = new Set<string>();
+
+    for (const providerKey of [...(preferences.fields.title?.providers ?? []), ...activeProviders, ...byProvider.keys()]) {
+      if (seen.has(providerKey)) continue;
+      seen.add(providerKey);
+
+      const candidate = byProvider.get(providerKey);
+      if (candidate) ordered.push(candidate);
+    }
+
+    return ordered;
   }
 
   private async resolveProviderPreferenceContext(libraryId?: number): Promise<ProviderPreferenceContext> {
@@ -312,6 +364,7 @@ export class MetadataFetchPipeline {
 
         let value = this.extractField(candidate, field);
         if (value === undefined || value === null) continue;
+        if (mergeStrategy !== 'overwrite' && this.isEmptyProviderValue(value)) continue;
 
         if (field === 'cover') {
           const existingValue = existing[field];
@@ -510,6 +563,11 @@ export class MetadataFetchPipeline {
     if (value === null || value === undefined || value === '') return true;
     if (Array.isArray(value)) return value.length === 0;
     return false;
+  }
+
+  private isEmptyProviderValue(value: unknown): boolean {
+    if (typeof value === 'string') return value.trim().length === 0;
+    return Array.isArray(value) && value.length === 0;
   }
 
   private filterExistingComicMetadata(

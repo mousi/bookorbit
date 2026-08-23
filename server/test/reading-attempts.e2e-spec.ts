@@ -494,4 +494,217 @@ describe('Reading attempts main-flow simulation (docker e2e)', { timeout: TIMEOU
       }),
     ).rejects.toThrow();
   });
+  it('19. reports an ownership conflict instead of throwing when another attempt holds the read', async () => {
+    const book = await createBook();
+    const attempts = ctx.app.get(ReadingAttemptService);
+    const hardcover = ctx.app.get(HardcoverRepository);
+    const owner = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2022-01-01',
+      endedOn: '2022-01-05',
+      outcome: 'completed',
+    });
+    const rival = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2022-03-01',
+      endedOn: '2022-03-05',
+      outcome: 'completed',
+    });
+
+    await expect(hardcover.linkReadingAttempt(adminUserId, owner.id, 9101)).resolves.toBe('linked');
+    await expect(hardcover.linkReadingAttempt(adminUserId, rival.id, 9101)).resolves.toBe('conflict');
+
+    const [rivalRow] = await ctx.db.select().from(schema.readingAttempts).where(eq(schema.readingAttempts.id, rival.id));
+    expect(rivalRow?.externalId).toBeNull();
+    const [ownerRow] = await ctx.db.select().from(schema.readingAttempts).where(eq(schema.readingAttempts.id, owner.id));
+    expect(ownerRow).toMatchObject({ externalId: '9101', deletedAt: null });
+  });
+
+  it('20. keeps a soft-deleted attempt tombstone reserved against reuse', async () => {
+    const book = await createBook();
+    const attempts = ctx.app.get(ReadingAttemptService);
+    const hardcover = ctx.app.get(HardcoverRepository);
+    const removed = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2022-06-01',
+      endedOn: '2022-06-05',
+      outcome: 'completed',
+    });
+    await hardcover.linkReadingAttempt(adminUserId, removed.id, 9202);
+    await attempts.delete(adminUserId, book.bookId, removed.id);
+    const survivor = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2022-09-01',
+      endedOn: '2022-09-05',
+      outcome: 'completed',
+    });
+
+    await expect(hardcover.linkReadingAttempt(adminUserId, survivor.id, 9202)).resolves.toBe('conflict');
+    await expect(hardcover.findClaimedHardcoverReadIds(adminUserId, book.bookId)).resolves.toContain(9202);
+  });
+
+  it('21. lists claimed read ids across live and soft-deleted attempts', async () => {
+    const book = await createBook();
+    const attempts = ctx.app.get(ReadingAttemptService);
+    const hardcover = ctx.app.get(HardcoverRepository);
+    const live = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2023-01-01',
+      endedOn: '2023-01-05',
+      outcome: 'completed',
+    });
+    const deleted = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2023-04-01',
+      endedOn: '2023-04-05',
+      outcome: 'completed',
+    });
+    await hardcover.linkReadingAttempt(adminUserId, live.id, 9301);
+    await hardcover.linkReadingAttempt(adminUserId, deleted.id, 9302);
+    await attempts.delete(adminUserId, book.bookId, deleted.id);
+
+    const claimed = await hardcover.findClaimedHardcoverReadIds(adminUserId, book.bookId);
+
+    expect(new Set(claimed)).toEqual(new Set([9301, 9302]));
+  });
+
+  it('22. lets an attempt restamp the same read but rejects reassignment', async () => {
+    const book = await createBook();
+    const attempts = ctx.app.get(ReadingAttemptService);
+    const hardcover = ctx.app.get(HardcoverRepository);
+    const attempt = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2023-07-01',
+      endedOn: '2023-07-05',
+      outcome: 'completed',
+    });
+
+    await expect(hardcover.linkReadingAttempt(adminUserId, attempt.id, 9401)).resolves.toBe('linked');
+    await expect(hardcover.linkReadingAttempt(adminUserId, attempt.id, 9401)).resolves.toBe('linked');
+    await expect(hardcover.linkReadingAttempt(adminUserId, attempt.id, 9402)).resolves.toBe('conflict');
+
+    await expect(hardcover.findClaimedHardcoverReadIds(adminUserId, book.bookId)).resolves.toEqual([9401]);
+  });
+
+  it('23. lets exactly one concurrent claim establish attempt ownership', async () => {
+    const book = await createBook();
+    const attempts = ctx.app.get(ReadingAttemptService);
+    const hardcover = ctx.app.get(HardcoverRepository);
+    const attempt = await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2023-08-01',
+      endedOn: '2023-08-05',
+      outcome: 'completed',
+    });
+
+    const outcomes = await Promise.all([
+      hardcover.linkReadingAttempt(adminUserId, attempt.id, 9501),
+      hardcover.linkReadingAttempt(adminUserId, attempt.id, 9502),
+    ]);
+
+    expect(outcomes.sort()).toEqual(['conflict', 'linked']);
+    const claimed = await hardcover.findClaimedHardcoverReadIds(adminUserId, book.bookId);
+    expect(claimed).toHaveLength(1);
+    expect([9501, 9502]).toContain(claimed[0]);
+  });
+  it('24. surfaces attempt timestamps as Dates so sync change detection can compare them', async () => {
+    const book = await createBook();
+    const attempts = ctx.app.get(ReadingAttemptService);
+    const hardcover = ctx.app.get(HardcoverRepository);
+    const before = new Date(Date.now() - 60_000);
+    await attempts.createHistorical(adminUserId, book.bookId, {
+      startedOn: '2024-02-01',
+      endedOn: '2024-02-05',
+      outcome: 'completed',
+    });
+
+    const sync = await hardcover.findBookSyncData(adminUserId, book.bookId);
+    const updatedAt = sync?.attemptsUpdatedAt ?? null;
+
+    // A raw driver timestamp string compares false against a Date, which silently disables the
+    // attempt-history branch of hasChanges and stops attempt edits from ever re-triggering a sync.
+    expect(updatedAt).toBeInstanceOf(Date);
+    expect(updatedAt instanceof Date && updatedAt > before).toBe(true);
+  });
+
+  it('25. leaves the attempt timestamp null for a book with no attempts', async () => {
+    const book = await createBook();
+    const hardcover = ctx.app.get(HardcoverRepository);
+
+    const sync = await hardcover.findBookSyncData(adminUserId, book.bookId);
+
+    expect(sync?.attemptsUpdatedAt ?? null).toBeNull();
+  });
+
+  it('26. lets lifecycle dates create and complete attempts through the status API', async () => {
+    const startedOnly = await createBook();
+    const startResponse = await patchStatus(startedOnly.bookId, { startedAt: '2026-01-10' });
+    expect(startResponse.statusCode).toBe(200);
+    expect(startResponse.json()).toMatchObject({ status: 'reading', startedAt: '2026-01-10', finishedAt: null });
+    expect((await listAttempts(startedOnly.bookId)).items).toEqual([
+      expect.objectContaining({ startedOn: '2026-01-10', endedOn: null, outcome: null, origin: 'manual' }),
+    ]);
+
+    const bothDates = await createBook();
+    const bothResponse = await patchStatus(bothDates.bookId, { startedAt: '2026-02-01', finishedAt: '2026-02-10' });
+    expect(bothResponse.statusCode).toBe(200);
+    expect(bothResponse.json()).toMatchObject({ status: 'read', startedAt: '2026-02-01', finishedAt: '2026-02-10' });
+    expect((await listAttempts(bothDates.bookId)).items).toEqual([
+      expect.objectContaining({ startedOn: '2026-02-01', endedOn: '2026-02-10', outcome: 'completed', origin: 'manual' }),
+    ]);
+  });
+
+  it('27. closes active lifecycle states with a date-only finish patch', async () => {
+    for (const status of ['reading', 'rereading', 'on_hold'] as const) {
+      const book = await createBook();
+      if (status === 'rereading') {
+        await patchStatus(book.bookId, { status: 'read', startedAt: '2025-01-01', finishedAt: '2025-01-10' });
+      }
+      await patchStatus(book.bookId, { status, startedAt: '2026-03-01' });
+
+      const response = await patchStatus(book.bookId, { finishedAt: '2026-03-10' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ status: 'read', startedAt: '2026-03-01', finishedAt: '2026-03-10' });
+      const history = await listAttempts(book.bookId);
+      expect(history.items[0]).toMatchObject({ startedOn: '2026-03-01', endedOn: '2026-03-10', outcome: 'completed' });
+      expect(history.items.filter((attempt) => attempt.outcome === null)).toHaveLength(0);
+    }
+  });
+
+  it('28. preserves completion when its finish date is cleared', async () => {
+    const book = await createBook();
+    await patchStatus(book.bookId, { status: 'read', startedAt: '2026-04-01', finishedAt: '2026-04-10' });
+
+    const response = await patchStatus(book.bookId, { finishedAt: null });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'read', startedAt: '2026-04-01', finishedAt: null });
+    expect((await listAttempts(book.bookId)).items).toEqual([
+      expect.objectContaining({ startedOn: '2026-04-01', endedOn: null, outcome: 'completed' }),
+    ]);
+  });
+
+  it('30. keeps a lifecycle-clearing status free of dates it cannot own', async () => {
+    const book = await createBook();
+    await patchStatus(book.bookId, { status: 'unread' });
+
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/books/${book.bookId}/reading-attempts`,
+      headers: auth(ctx.adminToken),
+      payload: { startedOn: '2026-06-01', endedOn: '2026-06-10', outcome: 'completed' },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const [projected] = await ctx.db
+      .select({ status: schema.userBookStatus.status, startedAt: schema.userBookStatus.startedAt, finishedAt: schema.userBookStatus.finishedAt })
+      .from(schema.userBookStatus)
+      .where(and(eq(schema.userBookStatus.userId, adminUserId), eq(schema.userBookStatus.bookId, book.bookId)))
+      .limit(1);
+
+    expect(projected).toMatchObject({ status: 'unread', startedAt: null, finishedAt: null });
+    expect((await listAttempts(book.bookId)).items[0]).toMatchObject({ startedOn: '2026-06-01', endedOn: '2026-06-10', outcome: 'completed' });
+  });
+
+  it('29. rejects conflicting lifecycle dates without reaching a database constraint', async () => {
+    const book = await createBook();
+    const response = await patchStatus(book.bookId, { status: 'reading', startedAt: '2026-05-01', finishedAt: '2026-05-10' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ errorCode: 'READING_DATES_STATUS_CONFLICT' });
+    expect((await listAttempts(book.bookId)).total).toBe(0);
+  });
 });

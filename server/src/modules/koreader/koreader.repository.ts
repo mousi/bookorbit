@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, notExists, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, notExists, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import { chunk } from '../../common/utils/batch.utils';
@@ -78,6 +78,10 @@ export class KoreaderRepository {
     await this.db.delete(schema.koreaderUsers).where(eq(schema.koreaderUsers.userId, userId));
   }
 
+  // A file hash is not unique: the same content in two places is two book file rows, and one
+  // historical hash can belong to several of them. The oldest row wins so a hash always resolves
+  // to the same target, both across requests and between this and resolveBookFilesByHashes. An
+  // unordered pick would move a device's sync target under it and strand data on the loser.
   async resolveBookFileByHash(hash: string, accessibleLibraryIds: number[] | null, userId?: number): Promise<ResolvedBookFileByHash | null> {
     if (accessibleLibraryIds !== null && accessibleLibraryIds.length === 0) return null;
 
@@ -88,6 +92,7 @@ export class KoreaderRepository {
       .from(schema.bookFiles)
       .innerJoin(schema.books, eq(schema.books.id, schema.bookFiles.bookId))
       .where(and(eq(schema.bookFiles.fileHash, hash), libraryFilter))
+      .orderBy(asc(schema.bookFiles.id))
       .limit(1);
 
     if (byFileHash) return byFileHash;
@@ -98,6 +103,7 @@ export class KoreaderRepository {
       .innerJoin(schema.bookFiles, eq(schema.bookFiles.id, schema.bookFileHashHistory.bookFileId))
       .innerJoin(schema.books, eq(schema.books.id, schema.bookFiles.bookId))
       .where(and(eq(schema.bookFileHashHistory.fileHash, hash), libraryFilter))
+      .orderBy(asc(schema.bookFiles.id))
       .limit(1);
 
     if (byFileHashHistory) return byFileHashHistory;
@@ -138,7 +144,8 @@ export class KoreaderRepository {
       })
       .from(schema.bookFiles)
       .innerJoin(schema.books, eq(schema.books.id, schema.bookFiles.bookId))
-      .where(and(inArray(schema.bookFiles.fileHash, hashes), libraryFilter));
+      .where(and(inArray(schema.bookFiles.fileHash, hashes), libraryFilter))
+      .orderBy(asc(schema.bookFiles.id));
 
     for (const row of direct) {
       if (row.hash && !result.has(row.hash)) {
@@ -160,7 +167,8 @@ export class KoreaderRepository {
       .from(schema.bookFileHashHistory)
       .innerJoin(schema.bookFiles, eq(schema.bookFiles.id, schema.bookFileHashHistory.bookFileId))
       .innerJoin(schema.books, eq(schema.books.id, schema.bookFiles.bookId))
-      .where(and(inArray(schema.bookFileHashHistory.fileHash, missing), libraryFilter));
+      .where(and(inArray(schema.bookFileHashHistory.fileHash, missing), libraryFilter))
+      .orderBy(asc(schema.bookFiles.id));
 
     for (const row of history) {
       if (!result.has(row.hash)) {
@@ -650,14 +658,131 @@ export class KoreaderRepository {
     return byFile;
   }
 
+  /**
+   * The live reset marker for a file, or null when none is outstanding. A live marker means
+   * the user cleared this file's position server-side and no device has been told yet, so it
+   * outranks every stored position regardless of timestamps: a device that pushed after the
+   * reset carries a fresh push clock but a pre-reset position, and the two are
+   * indistinguishable on the wire.
+   */
+  async getProgressReset(bookFileId: number, userId: number) {
+    const [row] = await this.db
+      .select({ resetAt: schema.koreaderProgressResets.resetAt })
+      .from(schema.koreaderProgressResets)
+      .where(and(eq(schema.koreaderProgressResets.bookFileId, bookFileId), eq(schema.koreaderProgressResets.userId, userId)))
+      .limit(1);
+    return row?.resetAt ?? null;
+  }
+
+  async getProgressResetsForFiles(bookFileIds: number[], userId: number) {
+    const byFile = new Map<number, Date>();
+    for (const batch of chunk([...new Set(bookFileIds)], BATCH_QUERY_SIZE)) {
+      const rows = await this.db
+        .select({ bookFileId: schema.koreaderProgressResets.bookFileId, resetAt: schema.koreaderProgressResets.resetAt })
+        .from(schema.koreaderProgressResets)
+        .where(and(inArray(schema.koreaderProgressResets.bookFileId, batch), eq(schema.koreaderProgressResets.userId, userId)));
+      for (const row of rows) byFile.set(row.bookFileId, row.resetAt);
+    }
+    return byFile;
+  }
+
+  /**
+   * The file a book's KOReader progress hangs off, in the shape the shared-progress path needs.
+   * Resolved through the book's primary file, matching findBookFileIdByBookId: the book page
+   * reports one file's holds, so the release action has to act on that same file rather than
+   * whichever one a marker happens to be found on first.
+   */
+  async findProgressBookFileByBookId(bookId: number, accessibleLibraryIds: number[] | null) {
+    if (accessibleLibraryIds !== null && accessibleLibraryIds.length === 0) return null;
+    const [row] = await this.db
+      .select({
+        id: schema.bookFiles.id,
+        bookId: schema.bookFiles.bookId,
+        libraryId: schema.books.libraryId,
+        format: schema.bookFiles.format,
+      })
+      .from(schema.bookFiles)
+      .innerJoin(schema.books, eq(schema.books.id, schema.bookFiles.bookId))
+      .where(
+        and(
+          eq(schema.books.id, bookId),
+          eq(schema.books.primaryFileId, schema.bookFiles.id),
+          // Scoped the same way every other entry point into this module is. A device progress
+          // row outlives the library grant that created it, so ownership of the row is not
+          // ownership of the book, and this path writes.
+          accessibleLibraryIds === null ? undefined : inArray(schema.books.libraryId, accessibleLibraryIds),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async getDeviceProgressForDevice(bookFileId: number, userId: number, deviceId: string) {
+    const [row] = await this.db
+      .select()
+      .from(schema.koreaderDeviceProgress)
+      .where(
+        and(
+          eq(schema.koreaderDeviceProgress.bookFileId, bookFileId),
+          eq(schema.koreaderDeviceProgress.userId, userId),
+          eq(schema.koreaderDeviceProgress.deviceId, deviceId),
+          eq(schema.koreaderDeviceProgress.orphaned, false),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  /** Device ids that have taken the outstanding reset for this file. */
+  async getConvergedResetDeviceIds(bookFileId: number, userId: number) {
+    const rows = await this.db
+      .select({ deviceId: schema.koreaderProgressResetDevices.deviceId })
+      .from(schema.koreaderProgressResetDevices)
+      .where(and(eq(schema.koreaderProgressResetDevices.bookFileId, bookFileId), eq(schema.koreaderProgressResetDevices.userId, userId)));
+    return new Set(rows.map((row) => row.deviceId));
+  }
+
+  async getConvergedResetDeviceIdsForFiles(bookFileIds: number[], userId: number) {
+    const byFile = new Map<number, Set<string>>();
+    for (const batch of chunk([...new Set(bookFileIds)], BATCH_QUERY_SIZE)) {
+      const rows = await this.db
+        .select({ bookFileId: schema.koreaderProgressResetDevices.bookFileId, deviceId: schema.koreaderProgressResetDevices.deviceId })
+        .from(schema.koreaderProgressResetDevices)
+        .where(and(inArray(schema.koreaderProgressResetDevices.bookFileId, batch), eq(schema.koreaderProgressResetDevices.userId, userId)));
+      for (const row of rows) {
+        const existing = byFile.get(row.bookFileId);
+        if (existing) existing.add(row.deviceId);
+        else byFile.set(row.bookFileId, new Set([row.deviceId]));
+      }
+    }
+    return byFile;
+  }
+
+  /**
+   * Records that a device has landed on the reset position. Deliberately per-device and not a
+   * retirement of the marker: another device may still be holding a pre-reset position, and it
+   * has to keep being held until it takes the reset itself.
+   */
+  async recordResetConvergence(bookFileId: number, userId: number, deviceId: string) {
+    await this.db.insert(schema.koreaderProgressResetDevices).values({ userId, bookFileId, deviceId }).onConflictDoNothing();
+  }
+
+  /** Retires a marker whose outcome is settled for every device, cascading the per-device rows. */
+  async clearProgressReset(bookFileId: number, userId: number) {
+    await this.db
+      .delete(schema.koreaderProgressResets)
+      .where(and(eq(schema.koreaderProgressResets.bookFileId, bookFileId), eq(schema.koreaderProgressResets.userId, userId)));
+  }
+
   async getDevicesList(userId: number) {
     const result = await this.db.execute<{
       device: string;
       device_id: string;
       last_sync_at: Date;
       last_book_title: string | null;
+      retired_at: Date | null;
     }>(sql`
-      SELECT device, device_id, last_sync_at, last_book_title
+      SELECT sub.device, sub.device_id, sub.last_sync_at, sub.last_book_title, r.retired_at
       FROM (
         SELECT DISTINCT ON (d.device, d.device_id)
           d.device,
@@ -670,7 +795,8 @@ export class KoreaderRepository {
         WHERE d.user_id = ${userId} AND d.orphaned = false
         ORDER BY d.device, d.device_id, d.updated_at DESC
       ) sub
-      ORDER BY last_sync_at DESC
+      LEFT JOIN koreader_device_retirements r ON r.user_id = ${userId} AND r.device_id = sub.device_id
+      ORDER BY sub.last_sync_at DESC
     `);
 
     return result.rows.map((r) => ({
@@ -678,7 +804,43 @@ export class KoreaderRepository {
       deviceId: r.device_id,
       lastSyncAt: new Date(r.last_sync_at),
       lastBookTitle: r.last_book_title ?? null,
+      retiredAt: r.retired_at ? new Date(r.retired_at) : null,
     }));
+  }
+
+  async listRetiredDeviceIds(userId: number): Promise<Map<string, Date>> {
+    const rows = await this.db
+      .select({ deviceId: schema.koreaderDeviceRetirements.deviceId, retiredAt: schema.koreaderDeviceRetirements.retiredAt })
+      .from(schema.koreaderDeviceRetirements)
+      .where(eq(schema.koreaderDeviceRetirements.userId, userId));
+    return new Map(rows.map((row) => [row.deviceId, row.retiredAt]));
+  }
+
+  /** True when any device-keyed table still knows this device, which is what makes it listable. */
+  async deviceExists(userId: number, deviceId: string): Promise<boolean> {
+    const result = await this.db.execute<{ device_exists: boolean }>(sql`
+      SELECT
+        EXISTS (SELECT 1 FROM koreader_device_progress WHERE user_id = ${userId} AND device_id = ${deviceId})
+        OR EXISTS (SELECT 1 FROM koreader_device_sweeps WHERE user_id = ${userId} AND device_id = ${deviceId})
+        OR EXISTS (SELECT 1 FROM koreader_device_settings WHERE user_id = ${userId} AND device_id = ${deviceId})
+        AS device_exists
+    `);
+    return result.rows[0]?.device_exists === true;
+  }
+
+  async retireDevice(userId: number, deviceId: string): Promise<void> {
+    await this.db
+      .insert(schema.koreaderDeviceRetirements)
+      .values({ userId, deviceId })
+      .onConflictDoNothing({
+        target: [schema.koreaderDeviceRetirements.userId, schema.koreaderDeviceRetirements.deviceId],
+      });
+  }
+
+  async restoreDevice(userId: number, deviceId: string): Promise<void> {
+    await this.db
+      .delete(schema.koreaderDeviceRetirements)
+      .where(and(eq(schema.koreaderDeviceRetirements.userId, userId), eq(schema.koreaderDeviceRetirements.deviceId, deviceId)));
   }
 
   async getKoreaderUserDefaultPattern(userId: number): Promise<string | null> {
@@ -762,6 +924,11 @@ export class KoreaderRepository {
           .where(and(eq(schema.koreaderDeviceSettings.userId, userId), eq(schema.koreaderDeviceSettings.deviceId, deviceId)))
           .returning({ deviceId: schema.koreaderDeviceSettings.deviceId }),
       ]);
+
+      // Not counted towards the deleted-row total: a marker on its own never made the device listable.
+      await tx
+        .delete(schema.koreaderDeviceRetirements)
+        .where(and(eq(schema.koreaderDeviceRetirements.userId, userId), eq(schema.koreaderDeviceRetirements.deviceId, deviceId)));
 
       // Only drop unmatched-book rows this device orphaned - a hash still reported by another
       // device must stay visible until that device is removed (or the hash is matched/linked).

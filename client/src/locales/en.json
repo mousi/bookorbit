@@ -731,6 +731,7 @@
       "test": {
         "connected": "Connected - {issuer}",
         "connectionFailed": "Connection failed",
+        "privateIssuerAddress": "The issuer URL resolves to a private or local network address, so the server refused to connect. Set OIDC_ALLOW_LOCAL_ISSUERS=true on the BookOrbit server to allow it.",
         "hide": "Hide",
         "details": "Details",
         "supported": "supported",
@@ -782,10 +783,13 @@
         "updatesGroup": "Updates",
         "importFromBooklore": "Import from Booklore",
         "bookloreImportConfigured": "Booklore import configured",
+        "importLibraryData": "Import library data",
+        "migrationConfigured": "Migration source configured",
         "migrationRunning": "Migration running",
         "migrationCompleted": "Migration completed",
         "migrationFailed": "Migration failed",
         "importDescription": "One-time import of books, metadata, and reading progress from a previous Booklore installation.",
+        "migrationDescription": "One-time import of books, metadata, and reading progress from another library application.",
         "configuredDescription": "Source: {name}. No migration run yet - continue setup to run the import.",
         "runningDescription": "Stage: {stage} - started {started}",
         "completedDescription": "From {name} - completed {date}",
@@ -827,6 +831,7 @@
       "migration": {
         "title": "Migration",
         "subtitle": "One-time Booklore import: connect source, map users, dry-run, start migration, and export a report.",
+        "genericSubtitle": "One-time library import: connect a source, map users, run a dry run, start migration, and export a report.",
         "progress": "Progress",
         "stepSourceConnection": "Source Connection",
         "stepUserPathMapping": "User & Path Mapping",
@@ -836,6 +841,7 @@
         "stepReport": "Report",
         "stepReportTitle": "Migration Report",
         "subtitleSource": "Configure the database connection to your source Booklore instance.",
+        "genericSubtitleSource": "Configure the connection to your source library application.",
         "subtitleMappings": "Map source users to target users and translate file paths.",
         "subtitleDryRun": "Preview what will be imported before running the live migration.",
         "subtitleRun": "Start the live import and monitor its progress.",
@@ -920,13 +926,16 @@
         "reasonNoFilePathMatch": "File path did not match any book in this library",
         "reasonNoFileHashMatch": "File hash did not match any book in this library",
         "reasonNoIsbnMatch": "ISBN did not match any book in this library",
+        "reasonNoAsinMatch": "ASIN did not match any book in this library",
         "reasonInsufficientSourceData": "Not enough metadata to attempt matching",
         "reasonAmbiguousIsbnMatch": "Multiple books matched the same ISBN",
+        "reasonAmbiguousAsinMatch": "Multiple books matched the same ASIN",
         "reasonAmbiguousFileHashMatch": "Multiple books matched the same file hash",
         "reasonAmbiguousFilePathMatch": "Multiple books matched the same file path",
         "reasonAmbiguousTitleAuthorMatch": "Multiple books matched the same title and author",
         "reasonUnknown": "Could not determine reason",
         "strategyIsbn": "Matched by ISBN",
+        "strategyAsin": "Matched by ASIN",
         "strategyFileHash": "Matched by file hash",
         "strategyPathMapping": "Matched by mapped file path",
         "strategyTitleAuthor": "Matched by title and author",
@@ -962,6 +971,7 @@
         "refresh": "Refresh",
         "sourceUser": "Source User",
         "targetUser": "Target User",
+        "doNotImport": "Do not import this user",
         "noSourceUsersLoaded": "No source users loaded yet.",
         "noActiveTargetUsers": "No active target users found. Create or re-enable a BookOrbit user before mapping.",
         "pathPrefixMappings": "Path Prefix Mappings",
@@ -1113,10 +1123,6 @@
         "runAllShort": "Run all",
         "enableTitle": "Enable auto author enrichment",
         "enableHint": "Automatically fetch author biographies and profile photos when books are added or updated.",
-        "updateStrategyTitle": "Update strategy",
-        "updateStrategyHint": "What to do when an author already has a biography or photo.",
-        "writeModeMissingOnly": "Only fill missing data (recommended)",
-        "writeModeAlwaysRefetch": "Always refresh existing data",
         "triggerOnImportTitle": "Trigger on import",
         "triggerOnImportHint": "Queue authors for enrichment when books are first added to a library.",
         "eligibilityTitle": "Eligibility conditions",
@@ -1134,7 +1140,25 @@
         "saveFailed": "Failed to save author enrichment settings",
         "noEligibleAuthors": "No eligible authors found",
         "noAuthorsToEnrich": "No authors to enrich",
-        "queueFailed": "Failed to queue author backfill"
+        "queueFailed": "Failed to queue author backfill",
+        "fields": {
+          "description": "Biography",
+          "photo": "Photo",
+          "birthDate": "Born",
+          "deathDate": "Died",
+          "website": "Website",
+          "genres": "Genres",
+          "influences": "Influences"
+        },
+        "metadataPreferences": {
+          "title": "Field sources",
+          "hint": "Set the order each field is filled from. The first provider with a value wins.",
+          "noProviders": "No provider available",
+          "saved": "Field sources saved",
+          "saveFailed": "Could not save field sources",
+          "limitedProviders": "{providers} supplies only biographies and photos.",
+          "addProvider": "Add {provider} as a source"
+        }
       },
       "scoreWeights": {
         "groupLabel": "Score Weights",
@@ -1586,6 +1610,8 @@
         "typography": "Typography",
         "font": "Font",
         "fontHint": "Typeface used for body text",
+        "fontStyle": "Font style",
+        "fontStyleHint": "Weight and slant of body text. Bold and italic in the book stay relative to it.",
         "builtInFonts": "Built-in fonts",
         "yourFonts": "Your Fonts",
         "fontSize": "Font size",
@@ -1692,7 +1718,7 @@
         "dropFilesHere": "Drop files here",
         "dragFontsPrefix": "Drag font files here, or",
         "browse": "browse",
-        "fileTypesHint": "TTF, OTF, WOFF, WOFF2 - max 10 MB each",
+        "fileTypesHint": "TTF, OTF, WOFF, WOFF2 - max 50 MB each",
         "yourFonts": "Your Fonts",
         "fontsUsed": "{count} / {max} used",
         "noFontsYet": "No fonts uploaded yet",
@@ -1705,6 +1731,9 @@
         "deleteVariant": "Delete variant",
         "styleNormal": "Normal",
         "styleItalic": "Italic",
+        "weightItalicOf": "{weight} Italic",
+        "variableRange": "Variable {min}-{max}",
+        "variableStyles": "{count, plural, one {# style} other {# styles}}",
         "weightThin": "Thin",
         "weightExtraLight": "Extra Light",
         "weightLight": "Light",
@@ -2089,6 +2118,23 @@
         "usernamePlaceholder": "e.g. myreader",
         "password": "Password",
         "passwordPlaceholder": "Min 6 characters",
+        "changeCredentials": {
+          "action": "Change credentials",
+          "title": "Change KOReader credentials",
+          "description": "Each BookOrbit account has one KOReader credential set. Change it here without deleting synced data.",
+          "newPassword": "New password",
+          "usernameInvalid": "The username must be between 3 and 100 characters.",
+          "passwordPlaceholder": "Leave blank to keep the current password",
+          "passwordHint": "Leave this blank to keep the current password.",
+          "passwordInvalid": "The password must be between 6 and 128 characters.",
+          "deviceNotice": "Devices using the previous login must be reconnected or updated with a newly downloaded plugin package.",
+          "showPassword": "Show new password",
+          "hidePassword": "Hide new password",
+          "save": "Save credentials",
+          "saving": "Saving...",
+          "updated": "KOReader credentials updated",
+          "updateFailed": "Failed to update KOReader credentials"
+        },
         "creating": "Creating...",
         "create": "Create",
         "credentialsCreated": "KOReader sync credentials created",
@@ -2105,6 +2151,8 @@
         "credentialsCreatedLabel": "Credentials created",
         "setup": "Setup",
         "pluginServerUrl": "Plugin server URL",
+        "syncUrl": "KOReader sync URL",
+        "syncUrlHint": "Works with the BookOrbit plugin and KOReader's built-in progress sync.",
         "copied": "Copied",
         "copyUrl": "Copy URL",
         "preconfiguredPlugin": "Preconfigured BookOrbit plugin",
@@ -2262,7 +2310,22 @@
         "deviceRemoved": "Device removed",
         "removeDeviceFailed": "Failed to remove device",
         "removeDeviceConfirmTitle": "Remove {device}?",
-        "removeDeviceConfirmBody": "This permanently deletes this device's synced progress, reading activity, and any unmatched-book entries no longer reported by another device. If the device syncs again later, it will reappear as a new entry."
+        "removeDeviceConfirmBody": "This permanently deletes this device's synced progress, reading activity, and any unmatched-book entries no longer reported by another device. If the device syncs again later, it will reappear as a new entry.",
+        "deleteDeviceDataConfirmTitle": "Delete synced data from {device}?",
+        "deleteDeviceDataConfirmBody": "This permanently deletes this device's synced progress, page-by-page reading activity, and any unmatched-book entries no longer reported by another device. Reading sessions already recorded in your stats are kept. If the device syncs again later, it will reappear as a new entry.",
+        "devicesHint": "Retiring a device hides it and keeps everything it has synced. Deleting its synced data cannot be undone.",
+        "retire": "Retire",
+        "retiring": "Retiring...",
+        "restore": "Restore",
+        "restoring": "Restoring...",
+        "deleteSyncedData": "Delete data",
+        "deletingSyncedData": "Deleting...",
+        "deviceRetired": "Device retired",
+        "deviceRestored": "Device restored",
+        "retireDeviceFailed": "Failed to retire device",
+        "restoreDeviceFailed": "Failed to restore device",
+        "retiredDevices": "{count, plural, one {# retired device} other {# retired devices}}",
+        "retiredOnLabel": "Retired"
       },
       "opds": {
         "title": "OPDS",
@@ -2330,6 +2393,54 @@
         "maintenance": "Maintenance",
         "audit-log": "Audit Log"
       }
+    },
+    "nav": {
+      "title": "Settings",
+      "ariaLabel": "Settings sections",
+      "searchPlaceholder": "Search settings",
+      "clearSearch": "Clear search",
+      "noResults": "No settings match {query}.",
+      "shortcutHint": "Press Cmd K to jump to any setting",
+      "groups": {
+        "you": "You",
+        "library": "Library",
+        "devices": "Devices & sync",
+        "server": "Server"
+      },
+      "descriptions": {
+        "profile": "Your name, email, password, and active sessions.",
+        "appearanceTheme": "Theme, accent colour, background, and corner radius.",
+        "appearanceBookCovers": "Cover shadows, spine effects, and placeholder art.",
+        "appearanceIcons": "Choose the icon style used across the app.",
+        "appearanceLayout": "Default library view, density, and spacing.",
+        "appearanceBehavior": "How the library reacts as you browse and sort.",
+        "appearanceLanguage": "Interface language and regional formats.",
+        "readerEbook": "Fonts, spacing, and page behaviour for eBooks.",
+        "readerPdf": "Rendering, zoom, and page fit for PDFs.",
+        "readerComics": "Reading direction and page spreads for comics.",
+        "readerAudio": "Playback speed, skip intervals, and sleep timer.",
+        "readerFonts": "Fonts available while reading.",
+        "readerGeneral": "Defaults shared by every reading mode.",
+        "notifications": "What BookOrbit tells you about, and where.",
+        "privacy": "Reading insights, shared links, and activity visibility.",
+        "restrictions": "Age ratings and hidden content for this account.",
+        "libraries": "Scan paths, watched folders, and ingest rules.",
+        "fileNaming": "Folder and filename patterns for stored files.",
+        "maintenance": "Rescans, duplicates, orphans, and cache rebuilds.",
+        "kobo": "Sync endpoint, store proxy, and shelf mapping.",
+        "koreader": "Progress sync and document matching.",
+        "opds": "Catalog feeds for third-party reading apps.",
+        "email": "SMTP delivery and send-to-device addresses.",
+        "hardcover": "Sync reading status and reviews with Hardcover.",
+        "users": "Accounts, roles, permissions, and invitations.",
+        "accountActivity": "Per-user reading and session activity.",
+        "magicLinks": "Passwordless share and login links.",
+        "oidc": "Single sign-on provider, claims, and provisioning.",
+        "serverFonts": "Fonts installed for every reader on this server.",
+        "bookDock": "Quick actions shown on book pages.",
+        "auditLog": "Who changed what, and when."
+      },
+      "backToApp": "Back to library"
     }
   },
   "achievements": {
@@ -3166,7 +3277,12 @@
       "noBiography": "No biography available. Use the menu to refresh metadata.",
       "previewFrom": "Preview from {provider}. Save metadata to persist it.",
       "booksLabel": "Books",
-      "lastAdded": "Last Added"
+      "lastAdded": "Last Added",
+      "born": "Born",
+      "died": "Died",
+      "website": "Website",
+      "genres": "Genres",
+      "influences": "Influences"
     },
     "list": {
       "title": "Authors",
@@ -3789,6 +3905,7 @@
         "dateAddedFutureError": "Date Added cannot be in the future.",
         "dateFinishedFutureError": "Date Finished cannot be in the future.",
         "dateFinishedBeforeStartedError": "Date Finished must be on or after Date Started.",
+        "dateFinishedBeforeStartedErrorWithDate": "Date Finished must be on or after Date Started ({date}).",
         "saveReadingDatesError": "Failed to save reading dates.",
         "saveAddedDateError": "Failed to save date added.",
         "koboPendingDelete": "Pending delete from device",
@@ -3798,7 +3915,11 @@
         "koboNotSynced": "Not synced",
         "koboNotSyncedTooltip": "Queued for next Kobo sync.",
         "filesNotFound": "Files not found",
-        "filesNotFoundDescription": "The file(s) for this book can no longer be found on disk. Metadata is still available. Run a library scan to confirm, or remove the record."
+        "filesNotFoundDescription": "The file(s) for this book can no longer be found on disk. Metadata is still available. Run a library scan to confirm, or remove the record.",
+        "resetHoldNotice": "{device} still has the old position ({percent})",
+        "resetHoldRelease": "Use this device's position",
+        "resetHoldReleasing": "Releasing...",
+        "resetHoldReleaseFailed": "Could not use this position. Try again."
       },
       "editMetadata": {
         "fieldCount": "{count, plural, =0 {no fields} one {one field} other {# fields}}",
@@ -3826,6 +3947,8 @@
         "savedButWriteFailed": "Metadata saved, but file write failed",
         "savedWriteSkippedReason": "Metadata saved, file write skipped: {reason}",
         "savedWriteSkipped": "Metadata saved, file write skipped",
+        "saveFailed": "Could not save the changes",
+        "saveFailedWithStatus": "Could not save the changes (HTTP {status})",
         "loadFromFileFailed": "Failed to load metadata from file",
         "loadedFieldsFromFile": "{count, plural, =0 {Loaded no fields from file} one {Loaded one field from file} other {Loaded # fields from file}}",
         "noMetadataInFile": "No metadata found in file",
@@ -3942,6 +4065,12 @@
           "notInFieldRulesText": "{providers}. Included in manual search with All enabled, but not used by automatic metadata fetch.",
           "noResults": "No results found",
           "noResultsHint": "Try adjusting the title or author",
+          "searchInterrupted": "The search did not finish",
+          "searchIncomplete": "Some results may be missing",
+          "providerTimedOut": "{provider} took too long to respond.",
+          "providerThrottled": "{provider} has hit its rate limit. Wait a moment and try again.",
+          "providerFailed": "{provider} could not be reached.",
+          "searchInterruptedHint": "Try again, or narrow the search scope.",
           "searchPrompt": "Search above, then click a result to start comparing metadata."
         },
         "writeAndRename": "Write to File & Rename",
@@ -4085,6 +4214,7 @@
             "startFuture": "Start date cannot be in the future.",
             "finishFuture": "Finish date cannot be in the future.",
             "finishBeforeStart": "Finish date must be on or after the start date.",
+            "finishBeforeStartWithDate": "Finish date must be on or after the start date ({date}).",
             "saveFailed": "Failed to save reading dates."
           },
           "eta": {
@@ -4672,6 +4802,7 @@
       "annotations": "Annotations",
       "uploadBooks": "Upload books",
       "appearance": "Appearance",
+      "appearanceDescription": "Choose theme, accent, corner radius, surface, and background options.",
       "theme": "Theme",
       "accent": "Accent",
       "radius": "Radius",
@@ -4692,7 +4823,8 @@
         "cta": "Star BookOrbit on GitHub"
       },
       "surfaceOpacity": "Surface opacity",
-      "surfaceOpacityValue": "{value}%"
+      "surfaceOpacityValue": "{value}%",
+      "surfaceBrightnessValue": "{value}%"
     },
     "sidebar": {
       "dashboard": "Dashboard",
@@ -4733,6 +4865,8 @@
       "seeAllSmartScopes": "See all smart scopes ({count})",
       "seeAllCollections": "See all collections ({count})",
       "updateAvailable": "Update {version}",
+      "updateTooltip": "{version} update available",
+      "openUpdateRelease": "Open the {version} release on GitHub",
       "zones": {
         "browse": "Browse"
       },
@@ -4827,6 +4961,12 @@
       "light": "Light",
       "dark": "Dark",
       "system": "System"
+    },
+    "radiusPicker": {
+      "sharp": "Sharp corners",
+      "default": "Default corners",
+      "rounded": "Rounded corners",
+      "pill": "Pill-shaped corners"
     },
     "languagePicker": {
       "searchPlaceholder": "Search languages",
@@ -5653,6 +5793,7 @@
       "schedule": {
         "fileWatching": "File watching",
         "autoScanSchedule": "Auto-scan schedule",
+        "timezoneHint": "Schedules run in the server's timezone.",
         "cronExpression": "Cron expression",
         "cronInvalid": "Invalid cron expression.",
         "cronFormat": "Format: minute hour day month weekday",
@@ -5671,6 +5812,7 @@
         },
         "human": {
           "disabled": "Auto-scan disabled",
+          "invalid": "Enter a valid schedule to see a preview",
           "hourly": "Every hour",
           "every6Hours": "Every 6 hours",
           "every12Hours": "Every 12 hours",
@@ -5766,6 +5908,7 @@
   },
   "migration": {
     "sidebarTitle": "Booklore Import",
+    "importTitle": "Library Import",
     "status": {
       "done": "Done",
       "saved": "Saved",
@@ -5781,7 +5924,8 @@
       "source": {
         "short": "Source Connection",
         "title": "Source Connection",
-        "subtitle": "Configure the database connection to your source Booklore instance."
+        "subtitle": "Configure the database connection to your source Booklore instance.",
+        "genericSubtitle": "Configure the connection to your source library application."
       },
       "mappings": {
         "short": "User & Path Mapping",
@@ -5823,18 +5967,61 @@
       "testConnection": "Test Connection",
       "saveAndValidate": "Save & Validate",
       "validatedWithWarnings": "Source validated with warnings",
+      "types": {
+        "booklore": "Booklore",
+        "grimmory": "Grimmory",
+        "audiobookshelf": "Audiobookshelf",
+        "calibreWebAutomated": "Calibre-Web Automated"
+      },
       "fields": {
         "type": "Source Type",
         "name": "Source Name",
+        "namePlaceholder": "Library import",
         "host": "Host",
         "port": "Port",
         "user": "User",
         "password": "Password",
         "passwordSaved": "Saved - leave unchanged",
         "passwordNotSet": "No password set",
+        "showSecret": "Show secret",
+        "hideSecret": "Hide secret",
         "database": "Database",
         "mediaRootPath": "Media Root Path",
-        "ssl": "Use TLS/SSL"
+        "ssl": "Use TLS/SSL",
+        "connectionMode": "Connection mode",
+        "apiMode": "Live API",
+        "backupMode": "Backup file",
+        "baseUrl": "Audiobookshelf URL",
+        "apiToken": "API token",
+        "apiTokenPlaceholder": "Enter an administrator API token",
+        "secretSaved": "Saved - leave unchanged",
+        "allowPrivateNetwork": "Allow private network access",
+        "allowPrivateNetworkHint": "Enable this only when Audiobookshelf is hosted on a trusted local or private network.",
+        "backupPath": "Backup file path",
+        "backupPathHint": "Enter an absolute server path inside the configured migration import directory.",
+        "cwaAppDatabasePath": "Calibre-Web Automated app.db snapshot",
+        "cwaAppDatabasePathPlaceholder": "/imports/calibre-web-automated/app.db",
+        "cwaMetadataDatabasePath": "Calibre metadata.db snapshot",
+        "cwaMetadataDatabasePathPlaceholder": "/imports/calibre-web-automated/metadata.db"
+      },
+      "validation": {
+        "nameRequired": "Source name is required",
+        "databaseFieldsRequired": "Host, user, database, and source name are required",
+        "apiFieldsRequired": "Audiobookshelf URL, API token, and source name are required",
+        "baseUrlInvalid": "Audiobookshelf URL must be a clean HTTP or HTTPS origin without a path",
+        "backupPathRequired": "Backup file path and source name are required",
+        "backupPathAbsolute": "Backup file path must be an absolute path",
+        "cwaAppDatabasePathRequired": "The Calibre-Web Automated app.db snapshot path is required",
+        "cwaAppDatabasePathAbsolute": "The Calibre-Web Automated app.db snapshot path must be absolute",
+        "cwaMetadataDatabasePathRequired": "The Calibre metadata.db snapshot path is required",
+        "cwaMetadataDatabasePathAbsolute": "The Calibre metadata.db snapshot path must be absolute"
+      },
+      "cwa": {
+        "snapshotTitle": "Stopped snapshot mode",
+        "stoppedWarning": "Stop Calibre-Web Automated before copying both databases. BookOrbit cannot verify that the two snapshots were copied at exactly the same instant.",
+        "importRootGuidance": "Both snapshot files must be readable server paths below the configured MIGRATION_IMPORT_ROOT directory.",
+        "logicalRootGuidance": "Book path mapping uses the logical Calibre library root stored in app.db, not the host folder containing these database snapshots.",
+        "compatibilityNote": "Schema behavior is verified against Calibre-Web Automated v4.0.6. Its databases do not expose a reliable application release version."
       },
       "mediaPath": {
         "hintRequired": "Required for migrating book covers.",
@@ -5861,6 +6048,7 @@
       "refresh": "Refresh",
       "sourceUser": "Source User",
       "targetUser": "Target User",
+      "doNotImport": "Do not import this user",
       "noSourceUsersLoaded": "No source users loaded yet.",
       "noActiveTargetUsers": "No active target users found. Create or re-enable a BookOrbit user before mapping.",
       "pathPrefixMappings": "Path Prefix Mappings",
@@ -5978,8 +6166,10 @@
       "noFilePathMatch": "File path did not match any book in this library",
       "noFileHashMatch": "File hash did not match any book in this library",
       "noIsbnMatch": "ISBN did not match any book in this library",
+      "noAsinMatch": "ASIN did not match any book in this library",
       "insufficientSourceData": "Not enough metadata to attempt matching",
       "ambiguousIsbnMatch": "Multiple books matched the same ISBN",
+      "ambiguousAsinMatch": "Multiple books matched the same ASIN",
       "ambiguousFileHashMatch": "Multiple books matched the same file hash",
       "ambiguousFilePathMatch": "Multiple books matched the same file path",
       "ambiguousTitleAuthorMatch": "Multiple books matched the same title and author",
@@ -5987,6 +6177,7 @@
     },
     "matchStrategy": {
       "isbn": "Matched by ISBN",
+      "asin": "Matched by ASIN",
       "fileHash": "Matched by file hash",
       "pathMapping": "Matched by mapped file path",
       "titleAuthor": "Matched by title and author",
@@ -6059,6 +6250,7 @@
   },
   "notifications": {
     "title": "Notifications",
+    "description": "Review and manage your notifications.",
     "markAllRead": "Mark all read",
     "clear": "Clear",
     "empty": "No notifications yet",
@@ -6172,6 +6364,7 @@
     "settings": {
       "title": "Settings",
       "ariaLabel": "Reader settings",
+      "close": "Close settings",
       "reset": "Reset to defaults",
       "modeLabel": "Color mode",
       "mode": {
@@ -6188,6 +6381,8 @@
       "fontBuiltIn": "Built-in",
       "fontServer": "Server fonts",
       "fontYours": "Your fonts",
+      "fontStyle": "Style",
+      "fontStyleItalicOf": "{style} Italic",
       "lineSpacing": "Line spacing",
       "pageWidth": "Page width",
       "pageWidthNarrow": "Narrow",

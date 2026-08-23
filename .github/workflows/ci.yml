@@ -21,8 +21,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  NODE_VERSION: "24"
-  PNPM_VERSION: "10"
+  NODE_VERSION: "26"
+  PNPM_VERSION: "11"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -256,7 +256,7 @@ jobs:
       - name: Compute changed scopes
         id: changes
         if: github.event_name != 'workflow_dispatch' && github.event_name != 'schedule'
-        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         with:
           filters: |
             server:
@@ -580,7 +580,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 

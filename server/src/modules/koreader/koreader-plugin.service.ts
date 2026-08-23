@@ -238,7 +238,7 @@ export class KoreaderPluginService {
       });
 
       this.logger.log(
-        `[${BULK_PROGRESS_EVENT}] [end] userId=${user.id} deviceId=${dto.deviceId.slice(0, 8)} durationMs=${Date.now() - startedAtMs} accepted=${results.length} shared=${applied.shared} stale=${applied.stale} unmatched=${unmatched.length} - bulk progress completed`,
+        `[${BULK_PROGRESS_EVENT}] [end] userId=${user.id} deviceId=${dto.deviceId.slice(0, 8)} durationMs=${Date.now() - startedAtMs} accepted=${results.length} shared=${applied.shared} stale=${applied.stale} held=${applied.held} unmatched=${unmatched.length} - bulk progress completed`,
       );
 
       return { results, unmatched };
@@ -262,6 +262,7 @@ export class KoreaderPluginService {
       pageStatsUploaded: dto.pageStatsUploaded,
       annotationsUpserted: dto.annotationsUpserted,
     });
+    await this.koreaderRepo.restoreDevice(user.id, dto.deviceId);
 
     const accessibleLibraryIds = await this.koreaderRepo.getAccessibleLibraryIds(user.id);
     const libraryVersion = await this.computeLibraryVersion(user.id, accessibleLibraryIds);

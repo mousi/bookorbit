@@ -109,8 +109,16 @@ function validateDates(values: { startedAt: string; finishedAt: string }): strin
   if (values.startedAt && values.startedAt > todayDateInput.value) return t('book.detail.readingLog.hero.dateErrors.startFuture')
   if (values.finishedAt && values.finishedAt > todayDateInput.value) return t('book.detail.readingLog.hero.dateErrors.finishFuture')
   if (values.startedAt && values.finishedAt && values.finishedAt < values.startedAt)
-    return t('book.detail.readingLog.hero.dateErrors.finishBeforeStart')
+    return t('book.detail.readingLog.hero.dateErrors.finishBeforeStartWithDate', { date: formatDisplayDate(values.startedAt) })
   return null
+}
+
+function dateSaveError(error: unknown): string {
+  const errorCode = typeof error === 'object' && error !== null && 'errorCode' in error ? (error as { errorCode?: unknown }).errorCode : null
+  if (errorCode === 'READING_DATE_STARTED_IN_FUTURE') return t('book.detail.readingLog.hero.dateErrors.startFuture')
+  if (errorCode === 'READING_DATE_FINISHED_IN_FUTURE') return t('book.detail.readingLog.hero.dateErrors.finishFuture')
+  if (errorCode === 'READING_DATES_INVALID_ORDER') return t('book.detail.readingLog.hero.dateErrors.finishBeforeStart')
+  return t('book.detail.readingLog.hero.dateErrors.saveFailed')
 }
 
 function applyReadStatusUpdate(updated: UserBookStatus) {
@@ -163,8 +171,8 @@ async function saveDateField(field: 'startedAt' | 'finishedAt') {
     const updated = await updateStatus(props.book.id, patch)
     applyReadStatusUpdate(updated)
     activeDateField.value = null
-  } catch {
-    datesError.value = t('book.detail.readingLog.hero.dateErrors.saveFailed')
+  } catch (error) {
+    datesError.value = dateSaveError(error)
   } finally {
     savingDates.value = false
   }
@@ -193,7 +201,7 @@ function handleFinishedCancel() {
   cancelDateEdit('finishedAt')
 }
 
-const currentProgress = ref(0)
+const readerProgress = ref(0)
 const progressLoaded = ref(false)
 
 async function loadProgress() {
@@ -218,15 +226,26 @@ async function loadProgress() {
       const data = (await audioRes.json()) as { percentage?: number } | null
       if (data && Number.isFinite(data.percentage)) max = Math.max(max, data.percentage!)
     }
-    currentProgress.value = Math.min(100, Math.max(0, max))
+    readerProgress.value = Math.min(100, Math.max(0, max))
   } catch {
-    currentProgress.value = 0
+    readerProgress.value = 0
   } finally {
     progressLoaded.value = true
   }
 }
 
 watch(() => props.book.id, loadProgress, { immediate: true })
+
+// The stored reading position only moves when a reader or a synced device writes it, so a
+// book whose progress was only ever logged by hand has none. Sessions are the other current
+// observation of how far the book got, combined the same way as the ebook and audio positions.
+const loggedProgress = computed(() => {
+  const value = props.stats?.latestEndProgress
+  if (value == null || !Number.isFinite(value)) return 0
+  return Math.min(100, Math.max(0, value))
+})
+
+const currentProgress = computed(() => Math.max(readerProgress.value, loggedProgress.value))
 
 const progressLabel = computed(() => {
   const value = currentProgress.value
@@ -352,7 +371,7 @@ function handleAddSession() {
 
           <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span>
-              Started
+              {{ t('book.detail.readingLog.hero.dateStarted') }}
               <input
                 v-if="activeDateField === 'startedAt'"
                 v-model="draftDates.startedAt"
@@ -369,8 +388,8 @@ function handleAddSession() {
                 {{ formatDisplayDate(savedDates.startedAt) }}
               </button>
             </span>
-            <span v-if="savedDates.finishedAt || activeDateField === 'finishedAt' || localReadStatus === 'read' || localReadStatus === 'abandoned'">
-              Finished
+            <span>
+              {{ t('book.detail.readingLog.hero.dateFinished') }}
               <input
                 v-if="activeDateField === 'finishedAt'"
                 v-model="draftDates.finishedAt"
@@ -384,7 +403,7 @@ function handleAddSession() {
                 @keydown.esc.prevent="handleFinishedCancel"
               />
               <button v-else class="ml-1 font-medium text-foreground transition-colors hover:text-primary" @click="handleFinishedClick">
-                {{ savedDates.finishedAt ? formatDisplayDate(savedDates.finishedAt) : 'Set date' }}
+                {{ formatDisplayDate(savedDates.finishedAt) }}
               </button>
             </span>
           </div>
