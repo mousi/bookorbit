@@ -86,6 +86,12 @@ const envSchema = z.object({
     .string()
     .transform((val) => val.trim())
     .optional(),
+  GOODREADS_BASE_URL: z
+    .string()
+    .trim()
+    .url('GOODREADS_BASE_URL must be a valid URL')
+    .refine((val) => /^https?:\/\//i.test(val), 'GOODREADS_BASE_URL must use http or https')
+    .optional(),
 });
 
 export function validateEnv(config: Record<string, unknown>) {

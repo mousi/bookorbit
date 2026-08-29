@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { ConfigType } from '@nestjs/config';
 import { MetadataCandidate, MetadataProviderKey } from '@bookorbit/types';
 
-import { ProviderConfigService } from '../../../metadata-preferences/provider-config.service';
 import { sanitizeLogValue } from '../../../../common/utils/log-sanitize.utils';
+import { appConfig } from '../../../../config/config';
+import { ProviderConfigService } from '../../../metadata-preferences/provider-config.service';
 import { fetchWithThrottle } from '../../fetch-with-throttle';
 import { ProviderThrottleError } from '../../provider-throttle.error';
 import { IdentifiableProvider } from '../metadata-provider';
@@ -32,7 +34,10 @@ export class GoodreadsProvider implements IdentifiableProvider {
 
   private readonly logger = new Logger(GoodreadsProvider.name);
 
-  constructor(private readonly providerConfig: ProviderConfigService) {}
+  constructor(
+    private readonly providerConfig: ProviderConfigService,
+    @Inject(appConfig.KEY) private readonly appConfiguration: ConfigType<typeof appConfig>,
+  ) {}
 
   async search(params: MetadataSearchParams): Promise<MetadataCandidate[]> {
     const { enabled } = await this.providerConfig.getConfig().then((c) => c.goodreads);
@@ -78,7 +83,7 @@ export class GoodreadsProvider implements IdentifiableProvider {
     // Prefer the JSON autocomplete endpoint, then fall back to HTML scraping.
     const autocompleteItems: GoodreadsAutocompleteItem[] = [];
     for (const autocompleteQuery of buildAutocompleteQueries(params)) {
-      const autocompleteUrl = `https://www.goodreads.com/book/auto_complete?format=json&q=${encodeURIComponent(autocompleteQuery)}`;
+      const autocompleteUrl = this.goodreadsUrl(`/book/auto_complete?format=json&q=${encodeURIComponent(autocompleteQuery)}`);
       const autocomplete = await this.fetchJson<GoodreadsAutocompleteItem[]>(
         autocompleteUrl,
         'search-autocomplete',
@@ -91,14 +96,14 @@ export class GoodreadsProvider implements IdentifiableProvider {
     const autocompleteTargets = rankAutocompleteItems(autocompleteItems, params, PROVIDER_LIMITS.GOODREADS_MAX_RESULTS);
     if (autocompleteTargets.length > 0) return autocompleteTargets;
 
-    const searchUrl = `https://www.goodreads.com/search?q=${encodeURIComponent(query)}&search_type=books`;
+    const searchUrl = this.goodreadsUrl(`/search?q=${encodeURIComponent(query)}&search_type=books`);
     const html = await this.fetchHtml(searchUrl, 'search', query, undefined, signal);
     const ids = html ? extractBookIds(html, params.title, PROVIDER_LIMITS.GOODREADS_MAX_RESULTS) : [];
     return ids.map((id) => ({ id }));
   }
 
   private async findIdByIsbn(isbn: string, signal?: AbortSignal): Promise<string | null> {
-    const html = await this.fetchHtml(`https://www.goodreads.com/book/isbn/${isbn}`, 'search-by-isbn', isbn, undefined, signal);
+    const html = await this.fetchHtml(this.goodreadsUrl(`/book/isbn/${isbn}`), 'search-by-isbn', isbn, undefined, signal);
     if (!html) return null;
     return (
       html.match(/property="og:url"\s+content="[^"]*\/book\/show\/(\d+)/)?.[1] ??
@@ -111,13 +116,18 @@ export class GoodreadsProvider implements IdentifiableProvider {
   // whether it parsed into a candidate. The caller uses it to tell a WAF block
   // apart from a book that simply did not map.
   private async fetchBook(bookId: string, signal?: AbortSignal): Promise<{ candidate: MetadataCandidate | null; reachable: boolean }> {
-    const url = `https://www.goodreads.com/book/show/${bookId}`;
+    const url = this.goodreadsUrl(`/book/show/${bookId}`);
     const html = await this.fetchHtml(url, 'lookup', undefined, bookId, signal);
     if (!html) return { candidate: null, reachable: false };
     const nextData = extractNextData(html);
     const state = nextData?.props?.pageProps?.apolloState;
     if (!state) return { candidate: null, reachable: true };
     return { candidate: mapGoodreadsApolloState(state, bookId), reachable: true };
+  }
+
+  private goodreadsUrl(path: string): string {
+    const baseUrl = this.appConfiguration.goodreadsBaseUrl ?? 'https://www.goodreads.com';
+    return `${baseUrl.replace(/\/$/, '')}${path}`;
   }
 
   private async fetchHtml(url: string, op: GoodreadsFetchOp, query?: string, providerId?: string, signal?: AbortSignal): Promise<string | null> {
@@ -136,7 +146,7 @@ export class GoodreadsProvider implements IdentifiableProvider {
         return null;
       }
       const html = await res.text();
-      if (isWafChallenge(res.status, html)) {
+      if (!this.appConfiguration.goodreadsBaseUrl && isWafChallenge(res.status, html)) {
         this.logger.warn(
           `[goodreads] [fail] op=${op}${safeQuery ? ` query="${safeQuery}"` : ''}${safeProviderId ? ` providerId="${safeProviderId}"` : ''} status=${res.status} durationMs=${Date.now() - startedAt} message="bot challenge"`,
         );

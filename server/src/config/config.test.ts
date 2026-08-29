@@ -13,6 +13,7 @@ function resetEnv(): void {
   delete process.env.SWAGGER_ENABLED;
   delete process.env.KOBO_CLOUDSCRAPER_PYTHON;
   delete process.env.KOREADER_PLUGIN_PATH;
+  delete process.env.GOODREADS_BASE_URL;
   delete process.env.DATABASE_URL;
   delete process.env.JWT_SECRET;
   delete process.env.JWT_EXPIRES_IN;
@@ -53,6 +54,7 @@ describe('config', () => {
       swaggerEnabled: false,
       koboCloudscraperPython: undefined,
       koreaderPluginSourcePath: undefined,
+      goodreadsBaseUrl: undefined,
     });
   });
 
@@ -64,6 +66,7 @@ describe('config', () => {
     process.env.SWAGGER_ENABLED = 'true';
     process.env.KOBO_CLOUDSCRAPER_PYTHON = '/opt/bookorbit-python/bin/python';
     process.env.KOREADER_PLUGIN_PATH = '/opt/koreader/bookorbit.koplugin';
+    process.env.GOODREADS_BASE_URL = 'http://cache.example.test/goodreads/';
     process.env.GITHUB_RELEASES_REPO = 'acme/app';
     process.env.GITHUB_RELEASES_TOKEN = 'ghp_example';
 
@@ -77,6 +80,7 @@ describe('config', () => {
       swaggerEnabled: true,
       koboCloudscraperPython: '/opt/bookorbit-python/bin/python',
       koreaderPluginSourcePath: '/opt/koreader/bookorbit.koplugin',
+      goodreadsBaseUrl: 'http://cache.example.test/goodreads/',
     });
   });
 

@@ -11,6 +11,7 @@ export const appConfig = registerAs('app', () => ({
   swaggerEnabled: parseBooleanFlag(process.env.SWAGGER_ENABLED, false),
   koboCloudscraperPython: process.env.KOBO_CLOUDSCRAPER_PYTHON?.trim() || undefined,
   koreaderPluginSourcePath: process.env.KOREADER_PLUGIN_PATH?.trim() || undefined,
+  goodreadsBaseUrl: process.env.GOODREADS_BASE_URL?.trim() || undefined,
 }));
 
 export const dbConfig = registerAs('db', () => ({

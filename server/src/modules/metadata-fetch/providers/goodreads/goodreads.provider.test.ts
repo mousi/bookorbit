@@ -1,4 +1,5 @@
 import { ProviderConfigurations } from '@bookorbit/types';
+import { appConfig } from '../../../../config/config';
 
 import { ProviderConfigService } from '../../../metadata-preferences/provider-config.service';
 import { ProviderThrottleError } from '../../provider-throttle.error';
@@ -41,7 +42,21 @@ describe('GoodreadsProvider', () => {
     providerConfig = {
       getConfig: vi.fn().mockResolvedValue(mockConfig),
     } as unknown as ProviderConfigService;
-    provider = new GoodreadsProvider(providerConfig);
+    provider = new GoodreadsProvider(providerConfig, { goodreadsBaseUrl: undefined } as ReturnType<typeof appConfig>);
+  });
+
+  it('uses the configured Goodreads base URL for all provider requests', async () => {
+    provider = new GoodreadsProvider(providerConfig, { goodreadsBaseUrl: 'http://cache.example.test/goodreads/' } as ReturnType<typeof appConfig>);
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve('<meta property="og:url" content="/book/show/456">') })
+      .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(`${goodreadsBookHtml('456', 'Cached book')}<script src="challenge.js"></script>`) });
+
+    const result = await provider.search({ isbn: '1234567890' });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(1, 'http://cache.example.test/goodreads/book/isbn/1234567890', expect.any(Object));
+    expect(global.fetch).toHaveBeenNthCalledWith(2, 'http://cache.example.test/goodreads/book/show/456', expect.any(Object));
+    expect(result).toHaveLength(1);
   });
 
   afterEach(() => {
