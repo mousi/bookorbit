@@ -143,4 +143,15 @@ describe('validateEnv', () => {
   it('rejects a relative migration import root', () => {
     expect(() => validateEnv({ ...BASE_ENV, MIGRATION_IMPORT_ROOT: './imports' })).toThrow('MIGRATION_IMPORT_ROOT must be an absolute path');
   });
+
+  it('accepts HTTP and HTTPS Goodreads base URLs', () => {
+    expect(() => validateEnv({ ...BASE_ENV, GOODREADS_BASE_URL: 'http://localhost:8080/cache' })).not.toThrow();
+    expect(() => validateEnv({ ...BASE_ENV, GOODREADS_BASE_URL: 'https://cache.example.com/goodreads' })).not.toThrow();
+  });
+
+  it('rejects non-HTTP Goodreads base URLs', () => {
+    expect(() => validateEnv({ ...BASE_ENV, GOODREADS_BASE_URL: 'ftp://cache.example.com' })).toThrow(
+      'GOODREADS_BASE_URL must use http or https',
+    );
+  });
 });
