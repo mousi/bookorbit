@@ -19,6 +19,7 @@ import { buildContentFilterClauses } from '../../common/utils/content-filter-sql
 import { accentInsensitiveIlike } from '../../common/utils/accent-insensitive-search.utils';
 import { advanceIsoTimestamp } from '../../common/utils/iso-timestamp.utils';
 import { parsePgTimestamptz } from '../../common/utils/pg-timestamp.utils';
+import { scanStateInvalidationPaths } from '../../common/utils/scan-state-paths.utils';
 import { seriesIndexSortKeySql } from '../../common/utils/series-index-sql.utils';
 import { SeriesIdentityService } from '../../common/services/series-identity.service';
 import { SeriesMembershipService } from '../../common/services/series-membership.service';
@@ -49,6 +50,7 @@ import {
   koreaderDeviceProgress,
   koreaderProgressResets,
   libraries,
+  libraryFolders,
   narrators,
   audiobookProgress,
   readingProgress,
@@ -1457,16 +1459,19 @@ export class BookRepository {
       .select({
         id: bookFiles.id,
         absolutePath: bookFiles.absolutePath,
+        relPath: bookFiles.relPath,
         format: bookFiles.format,
         role: bookFiles.role,
         bookId: bookFiles.bookId,
         libraryId: books.libraryId,
+        libraryFolderPath: libraryFolders.path,
         fileHash: bookFiles.fileHash,
         sizeBytes: bookFiles.sizeBytes,
         durationSeconds: bookFiles.durationSeconds,
       })
       .from(bookFiles)
       .innerJoin(books, eq(books.id, bookFiles.bookId))
+      .innerJoin(libraryFolders, eq(libraryFolders.id, bookFiles.libraryFolderId))
       .where(eq(bookFiles.id, fileId))
       .limit(1);
     return file ?? null;
@@ -1476,7 +1481,10 @@ export class BookRepository {
     await this.db.delete(bookFiles).where(eq(bookFiles.id, fileId));
   }
 
-  async updateBookFile(fileId: number, data: { format?: string | null; role?: string; absolutePath?: string; sizeBytes?: number }): Promise<void> {
+  async updateBookFile(
+    fileId: number,
+    data: { format?: string | null; role?: string; absolutePath?: string; relPath?: string | null; sizeBytes?: number },
+  ): Promise<void> {
     await this.db
       .update(bookFiles)
       .set({ ...data, updatedAt: new Date() })
@@ -1891,6 +1899,66 @@ export class BookRepository {
 
   async deleteByIds(bookIds: number[]): Promise<void> {
     await this.db.delete(books).where(inArray(books.id, bookIds));
+  }
+
+  async deleteByIdsAndInvalidateScanState(bookIds: number[]): Promise<void> {
+    const uniqueBookIds = [...new Set(bookIds)].sort((a, b) => a - b);
+    if (uniqueBookIds.length === 0) return;
+
+    await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select({ id: books.id, libraryFolderId: books.libraryFolderId, folderPath: books.folderPath })
+        .from(books)
+        .where(inArray(books.id, uniqueBookIds))
+        .orderBy(asc(books.id))
+        .for('update');
+      if (rows.length === 0) return;
+
+      const libraryFolderIds = [...new Set(rows.map((row) => row.libraryFolderId))].sort((a, b) => a - b);
+      await tx
+        .select({ id: libraryFolders.id })
+        .from(libraryFolders)
+        .where(inArray(libraryFolders.id, libraryFolderIds))
+        .orderBy(asc(libraryFolders.id))
+        .for('update');
+
+      await tx
+        .update(libraryFolders)
+        .set({ scanStateVersion: sql`${libraryFolders.scanStateVersion} + 1` })
+        .where(inArray(libraryFolders.id, libraryFolderIds));
+
+      const pathsByLibraryFolder = new Map<number, Set<string>>();
+      for (const row of rows) {
+        let paths = pathsByLibraryFolder.get(row.libraryFolderId);
+        if (!paths) {
+          paths = new Set<string>();
+          pathsByLibraryFolder.set(row.libraryFolderId, paths);
+        }
+        for (const path of scanStateInvalidationPaths(row.folderPath)) paths.add(path);
+      }
+
+      const chunkSize = 500;
+      for (const [libraryFolderId, paths] of pathsByLibraryFolder) {
+        const pathList = [...paths];
+        for (let offset = 0; offset < pathList.length; offset += chunkSize) {
+          await tx
+            .delete(schema.libraryDirScanState)
+            .where(
+              and(
+                eq(schema.libraryDirScanState.libraryFolderId, libraryFolderId),
+                inArray(schema.libraryDirScanState.dirPath, pathList.slice(offset, offset + chunkSize)),
+              ),
+            );
+        }
+      }
+
+      await tx.delete(books).where(
+        inArray(
+          books.id,
+          rows.map((row) => row.id),
+        ),
+      );
+    });
   }
 
   async bulkSetRating(bookIds: number[], rating: number | null, userId: number): Promise<void> {

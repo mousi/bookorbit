@@ -278,22 +278,31 @@ watch(coverSrc, () => {
 
 /**
  * The cover frame follows the library's aspect ratio, so a 1/1 library makes it much shorter than
- * a 2/3 one. The column height is fixed by the grid, so the width is derived from the height that
- * is actually available: that keeps the frame's ratio exact instead of letting it stretch.
+ * a 2/3 one. The column height is fixed by the grid, so the width is derived from the space left
+ * after the actions: that keeps the group top-packed without overflowing short viewports.
  */
-const coverSlotEl = ref<HTMLElement | null>(null)
-const coverSlotHeight = ref(0)
-let coverSlotObserver: ResizeObserver | null = null
+const coverColumnEl = ref<HTMLElement | null>(null)
+const coverActionsEl = ref<HTMLElement | null>(null)
+const coverColumnHeight = ref(0)
+const coverActionsHeight = ref(0)
+let coverLayoutObserver: ResizeObserver | null = null
+const COVER_GROUP_GAP_PX = 16
 
 const coverMaxWidth = computed(() => {
-  if (coverSlotHeight.value <= 0) return undefined
+  const availableHeight = coverColumnHeight.value - coverActionsHeight.value - COVER_GROUP_GAP_PX
+  if (availableHeight <= 0) return undefined
   const parts = detailCoverAspectRatio.value.split('/').map((part) => Number(part.trim()))
   const width = parts[0]
   const height = parts[1]
   if (width === undefined || height === undefined) return undefined
   if (!Number.isFinite(width) || !Number.isFinite(height) || height <= 0) return undefined
-  return `${Math.floor(coverSlotHeight.value * (width / height))}px`
+  return `${Math.floor(availableHeight * (width / height))}px`
 })
+
+function measureCoverLayout() {
+  coverColumnHeight.value = coverColumnEl.value?.clientHeight ?? 0
+  coverActionsHeight.value = coverActionsEl.value?.getBoundingClientRect().height ?? 0
+}
 
 function toggleDescription() {
   descriptionExpanded.value = !descriptionExpanded.value
@@ -304,20 +313,22 @@ function handleMobileScoreOpen(open: boolean) {
 }
 
 onMounted(() => {
-  coverSlotObserver = new ResizeObserver((entries) => {
-    coverSlotHeight.value = entries[0]?.contentRect.height ?? 0
-  })
-  if (coverSlotEl.value) coverSlotObserver.observe(coverSlotEl.value)
+  coverLayoutObserver = new ResizeObserver(measureCoverLayout)
+  if (coverColumnEl.value) coverLayoutObserver.observe(coverColumnEl.value)
+  if (coverActionsEl.value) coverLayoutObserver.observe(coverActionsEl.value)
+  measureCoverLayout()
 })
 
 onBeforeUnmount(() => {
-  coverSlotObserver?.disconnect()
-  coverSlotObserver = null
+  coverLayoutObserver?.disconnect()
+  coverLayoutObserver = null
 })
 
-watch(coverSlotEl, (element) => {
-  coverSlotObserver?.disconnect()
-  if (element) coverSlotObserver?.observe(element)
+watch([coverColumnEl, coverActionsEl], ([column, actions]) => {
+  coverLayoutObserver?.disconnect()
+  if (column) coverLayoutObserver?.observe(column)
+  if (actions) coverLayoutObserver?.observe(actions)
+  measureCoverLayout()
 })
 
 const coverAspectRatio = inject(COVER_ASPECT_RATIO_KEY, ref(DEFAULT_COVER_ASPECT_RATIO))
@@ -434,6 +445,11 @@ const {
 } = usePersonalNote(computed(() => props.book))
 
 const personalNoteUpdatedLabel = computed(() => (props.book.personalNoteUpdatedAt ? formatDateTime(props.book.personalNoteUpdatedAt) : null))
+
+function startVisiblePersonalNoteEdit() {
+  showPersonalReview.value = true
+  startPersonalNoteEdit()
+}
 
 watch(
   () => props.book.id,
@@ -1180,23 +1196,27 @@ watch(
     </div>
   </div>
 
-  <!--
-    Direction A. Below xl the page is a single scrolling column. From xl the pane owns the
-    height: three columns fill row one, the discovery shelf takes row two, and any column
-    that runs long scrolls inside itself so the page itself never does.
-  -->
+  <!-- Below 46rem of pane width the page is a single column. Above it, the shelf follows the
+       natural height of the three-column content instead of being pinned to the viewport bottom. -->
   <div
-    class="flex flex-col gap-5 xl:grid xl:h-full xl:min-h-0 xl:grid-cols-[17rem_minmax(0,1fr)_19.25rem] xl:grid-rows-[minmax(0,1fr)_clamp(11.25rem,29%,17.5rem)] xl:gap-x-6 xl:gap-y-5"
+    data-test="details-layout"
+    class="flex flex-col gap-5 @min-[46rem]/book-detail:grid @min-[46rem]/book-detail:content-start @min-[46rem]/book-detail:grid-cols-[clamp(12rem,23cqi,17rem)_minmax(16rem,1fr)_clamp(15rem,26cqi,19.25rem)] @min-[46rem]/book-detail:gap-x-6 @min-[46rem]/book-detail:gap-y-5"
   >
     <!-- Cover column -->
-    <div class="flex min-w-0 flex-col gap-3 xl:min-h-0 xl:col-start-1 xl:row-start-1">
-      <div class="flex items-start gap-4 sm:gap-5 xl:block xl:min-h-0 xl:flex-1">
+    <div
+      ref="coverColumnEl"
+      data-test="cover-column"
+      class="flex min-w-0 flex-col gap-4 @min-[46rem]/book-detail:col-start-1 @min-[46rem]/book-detail:row-start-1 @min-[46rem]/book-detail:min-h-0"
+    >
+      <div class="flex items-start gap-4 sm:gap-5 @min-[46rem]/book-detail:block @min-[46rem]/book-detail:min-h-0">
         <div
-          ref="coverSlotEl"
-          class="w-28 shrink-0 sm:w-36 xl:flex xl:h-full xl:w-full xl:items-center xl:justify-center"
+          class="w-28 shrink-0 sm:w-36 @min-[46rem]/book-detail:flex @min-[46rem]/book-detail:w-full @min-[46rem]/book-detail:items-start @min-[46rem]/book-detail:justify-end"
           :class="hasCover && coverLoaded && !coverFailed ? 'cursor-zoom-in' : ''"
         >
-          <div class="w-full xl:max-h-full" :style="{ maxWidth: coverMaxWidth }">
+          <div
+            class="w-full @min-[46rem]/book-detail:max-h-full @min-[46rem]/book-detail:max-w-[var(--detail-cover-max-width)]"
+            :style="{ '--detail-cover-max-width': coverMaxWidth }"
+          >
             <BookCoverSurface
               class="book-cover-surface--spine-fitted group relative w-full overflow-hidden rounded-lg shadow-lg shadow-black/40"
               :disable-spine="isPrimaryAudio"
@@ -1236,8 +1256,8 @@ watch(
           </div>
         </div>
 
-        <!-- Compact identity, replaced by the full block in column two from xl -->
-        <div class="min-w-0 flex-1 xl:hidden">
+        <!-- Compact identity, replaced by the full block in column two from 46rem -->
+        <div class="min-w-0 flex-1 @min-[46rem]/book-detail:hidden">
           <h1 class="text-lg font-bold leading-snug break-words sm:text-xl">{{ book.title ?? t('book.detail.details.untitled') }}</h1>
           <p v-if="book.subtitle" class="mt-1 text-sm leading-snug text-muted-foreground break-words">{{ book.subtitle }}</p>
           <p v-if="authorLinks.length" class="mt-2 text-[13px] break-words">
@@ -1297,168 +1317,172 @@ watch(
         </div>
       </div>
 
-      <div class="mt-4 space-y-2">
-        <div class="flex gap-2">
-          <!-- Read/Play button: split when multiple files, plain when single -->
-          <div v-if="hasMultipleFiles" class="flex flex-1 h-9 rounded-md overflow-hidden">
+      <div ref="coverActionsEl" data-test="cover-actions">
+        <div class="space-y-2">
+          <div class="flex gap-2">
+            <!-- Read/Play button: split when multiple files, plain when single -->
+            <div v-if="hasMultipleFiles" class="flex flex-1 h-9 rounded-md overflow-hidden">
+              <button
+                class="flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                :disabled="!primaryFile"
+                @click="openBook"
+              >
+                <BookOpen v-if="isPrimaryAudio" class="size-4" />
+                <BookOpen v-else class="size-4" />
+                {{ isPrimaryAudio ? t('book.detail.details.listen') : t('book.detail.details.read') }}
+              </button>
+              <div class="w-px bg-primary-foreground/20 shrink-0" />
+              <Popover :open="readMenuOpen" @update:open="(v) => (readMenuOpen = v)">
+                <PopoverTrigger as-child>
+                  <button
+                    class="w-8 shrink-0 flex items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                    :title="t('book.detail.details.chooseFormat')"
+                  >
+                    <ChevronDown class="size-3.5" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent class="w-52 p-1" align="end">
+                  <button
+                    v-for="file in openableFiles"
+                    :key="file.id"
+                    class="flex w-full items-center gap-2.5 px-2 py-1.5 rounded text-sm hover:bg-muted transition-colors"
+                    @click="openBookFile(file)"
+                  >
+                    <span
+                      class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0"
+                      :style="formatBadgeStyle(file.format ?? '?')"
+                      >{{ file.format ?? '?' }}</span
+                    >
+                    <span class="flex-1 text-left text-muted-foreground text-xs truncate">
+                      <template v-if="isMultiTrackAudio && FORMAT_TO_GROUP[file.format!] === 'audio'">{{
+                        t('book.detail.details.audiobook')
+                      }}</template>
+                      <template v-else>{{ formatFileSize(file.sizeBytes) }}</template>
+                    </span>
+                    <span v-if="file.role === 'primary' && !isMultiTrackAudio" class="text-[10px] text-primary font-medium shrink-0">{{
+                      t('book.detail.details.primary')
+                    }}</span>
+                  </button>
+                </PopoverContent>
+              </Popover>
+            </div>
             <button
-              class="flex flex-1 items-center justify-center gap-2 bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              v-else
+              class="flex flex-1 items-center justify-center gap-2 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
               :disabled="!primaryFile"
               @click="openBook"
             >
-              <BookOpen v-if="isPrimaryAudio" class="size-4" />
+              <Headphones v-if="isPrimaryAudio" class="size-4" />
               <BookOpen v-else class="size-4" />
               {{ isPrimaryAudio ? t('book.detail.details.listen') : t('book.detail.details.read') }}
             </button>
-            <div class="w-px bg-primary-foreground/20 shrink-0" />
-            <Popover :open="readMenuOpen" @update:open="(v) => (readMenuOpen = v)">
+
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <button
+                  class="flex items-center justify-center h-9 w-12 shrink-0 rounded-md border border-input bg-background hover:bg-muted transition-colors disabled:opacity-50"
+                  :disabled="!primaryFile"
+                  :aria-label="t('book.detail.details.peek')"
+                  @click="peekBook"
+                >
+                  <Eye class="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{{ t('book.detail.details.peek') }}</TooltipContent>
+            </Tooltip>
+          </div>
+
+          <div class="flex gap-2">
+            <div v-if="hasPermission('library_download')" class="flex-1">
+              <BookDownloadButton :files="book.files" :book-id="book.id" />
+            </div>
+            <button
+              class="flex flex-1 items-center justify-center h-9 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors"
+              @click="addToCollectionOpen = true"
+            >
+              <Library class="size-3.5" />
+            </button>
+            <button
+              v-if="hasPermission('email_send')"
+              class="flex flex-1 items-center justify-center h-9 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors"
+              :aria-label="t('book.detail.details.sendViaEmail')"
+              @click="handleSendFromMenu"
+            >
+              <Send class="size-3.5" />
+            </button>
+            <Popover v-if="canEditMetadata || hasPermission('library_delete_books')" :open="moreMenuOpen" @update:open="(v) => (moreMenuOpen = v)">
               <PopoverTrigger as-child>
                 <button
-                  class="w-8 shrink-0 flex items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-                  :title="t('book.detail.details.chooseFormat')"
+                  class="flex flex-1 items-center justify-center h-9 rounded-md border border-border bg-background text-foreground hover:bg-muted transition-colors"
                 >
-                  <ChevronDown class="size-3.5" />
+                  <MoreVertical class="size-3.5" />
                 </button>
               </PopoverTrigger>
-              <PopoverContent class="w-52 p-1" align="end">
+              <PopoverContent class="w-44 p-1" align="end">
                 <button
-                  v-for="file in openableFiles"
-                  :key="file.id"
-                  class="flex w-full items-center gap-2.5 px-2 py-1.5 rounded text-sm hover:bg-muted transition-colors"
-                  @click="openBookFile(file)"
+                  v-if="canEditMetadata"
+                  class="flex w-full items-center gap-2 px-2 py-1.5 rounded text-sm text-foreground hover:bg-muted transition-colors"
+                  @click="handleOpenResetReadingState"
                 >
-                  <span
-                    class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0"
-                    :style="formatBadgeStyle(file.format ?? '?')"
-                    >{{ file.format ?? '?' }}</span
-                  >
-                  <span class="flex-1 text-left text-muted-foreground text-xs truncate">
-                    <template v-if="isMultiTrackAudio && FORMAT_TO_GROUP[file.format!] === 'audio'">{{
-                      t('book.detail.details.audiobook')
-                    }}</template>
-                    <template v-else>{{ formatFileSize(file.sizeBytes) }}</template>
-                  </span>
-                  <span v-if="file.role === 'primary' && !isMultiTrackAudio" class="text-[10px] text-primary font-medium shrink-0">{{
-                    t('book.detail.details.primary')
-                  }}</span>
+                  <RotateCcw class="size-3.5" />
+                  Reset reading state
+                </button>
+                <button
+                  v-if="hasPermission('library_edit_metadata')"
+                  class="flex w-full items-center gap-2 px-2 py-1.5 rounded text-sm hover:bg-muted transition-colors"
+                  @click="handleMoveFromMenu"
+                >
+                  <FolderInput class="size-3.5" />
+                  {{ t('book.move.action') }}
+                </button>
+                <button
+                  v-if="hasPermission('library_delete_books')"
+                  class="flex w-full items-center gap-2 px-2 py-1.5 rounded text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                  @click="handleDeleteFromMenu"
+                >
+                  <Trash2 class="size-3.5" />
+                  Delete book
                 </button>
               </PopoverContent>
             </Popover>
           </div>
-          <button
-            v-else
-            class="flex flex-1 items-center justify-center gap-2 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-            :disabled="!primaryFile"
-            @click="openBook"
-          >
-            <Headphones v-if="isPrimaryAudio" class="size-4" />
-            <BookOpen v-else class="size-4" />
-            {{ isPrimaryAudio ? t('book.detail.details.listen') : t('book.detail.details.read') }}
-          </button>
-
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <button
-                class="flex items-center justify-center h-9 w-12 shrink-0 rounded-md border border-input bg-background hover:bg-muted transition-colors disabled:opacity-50"
-                :disabled="!primaryFile"
-                :aria-label="t('book.detail.details.peek')"
-                @click="peekBook"
-              >
-                <Eye class="size-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{{ t('book.detail.details.peek') }}</TooltipContent>
-          </Tooltip>
         </div>
 
-        <div class="flex gap-2">
-          <div v-if="hasPermission('library_download')" class="flex-1">
-            <BookDownloadButton :files="book.files" :book-id="book.id" />
+        <div v-for="held in resetHeldDevices" :key="held.deviceId" class="mt-2 flex items-start gap-1.5">
+          <TriangleAlert class="size-3 text-amber-500 shrink-0 mt-0.5" aria-hidden="true" />
+          <div class="min-w-0">
+            <p class="text-[11px] text-amber-500">
+              {{ t('book.detail.details.resetHoldNotice', { device: held.device, percent: formatPercent(held.percentage) }) }}
+            </p>
+            <button
+              class="mt-0.5 text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="isReleasingHold(held.deviceId)"
+              @click="handleReleaseResetHold(held.deviceId)"
+            >
+              {{ isReleasingHold(held.deviceId) ? t('book.detail.details.resetHoldReleasing') : t('book.detail.details.resetHoldRelease') }}
+            </button>
+            <p v-if="hasReleaseFailed(held.deviceId)" role="alert" class="text-[11px] text-destructive">
+              {{ t('book.detail.details.resetHoldReleaseFailed') }}
+            </p>
           </div>
-          <button
-            class="flex flex-1 items-center justify-center h-9 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors"
-            @click="addToCollectionOpen = true"
-          >
-            <Library class="size-3.5" />
-          </button>
-          <button
-            v-if="hasPermission('email_send')"
-            class="flex flex-1 items-center justify-center h-9 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors"
-            :aria-label="t('book.detail.details.sendViaEmail')"
-            @click="handleSendFromMenu"
-          >
-            <Send class="size-3.5" />
-          </button>
-          <Popover v-if="canEditMetadata || hasPermission('library_delete_books')" :open="moreMenuOpen" @update:open="(v) => (moreMenuOpen = v)">
-            <PopoverTrigger as-child>
-              <button
-                class="flex flex-1 items-center justify-center h-9 rounded-md border border-border bg-background text-foreground hover:bg-muted transition-colors"
-              >
-                <MoreVertical class="size-3.5" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent class="w-44 p-1" align="end">
-              <button
-                v-if="canEditMetadata"
-                class="flex w-full items-center gap-2 px-2 py-1.5 rounded text-sm text-foreground hover:bg-muted transition-colors"
-                @click="handleOpenResetReadingState"
-              >
-                <RotateCcw class="size-3.5" />
-                Reset reading state
-              </button>
-              <button
-                v-if="hasPermission('library_edit_metadata')"
-                class="flex w-full items-center gap-2 px-2 py-1.5 rounded text-sm hover:bg-muted transition-colors"
-                @click="handleMoveFromMenu"
-              >
-                <FolderInput class="size-3.5" />
-                {{ t('book.move.action') }}
-              </button>
-              <button
-                v-if="hasPermission('library_delete_books')"
-                class="flex w-full items-center gap-2 px-2 py-1.5 rounded text-sm text-destructive hover:bg-destructive/10 transition-colors"
-                @click="handleDeleteFromMenu"
-              >
-                <Trash2 class="size-3.5" />
-                Delete book
-              </button>
-            </PopoverContent>
-          </Popover>
         </div>
+        <Tooltip v-if="koboAnomaly">
+          <TooltipTrigger as-child>
+            <div class="mt-2 flex items-center gap-1.5 cursor-help" tabindex="0">
+              <TriangleAlert class="size-3 text-amber-500 shrink-0" />
+              <p class="text-[11px] text-amber-500">{{ koboAnomaly.label }}</p>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>{{ koboAnomaly.tooltip }}</TooltipContent>
+        </Tooltip>
       </div>
-
-      <div v-for="held in resetHeldDevices" :key="held.deviceId" class="mt-2 flex items-start gap-1.5">
-        <TriangleAlert class="size-3 text-amber-500 shrink-0 mt-0.5" aria-hidden="true" />
-        <div class="min-w-0">
-          <p class="text-[11px] text-amber-500">
-            {{ t('book.detail.details.resetHoldNotice', { device: held.device, percent: formatPercent(held.percentage) }) }}
-          </p>
-          <button
-            class="mt-0.5 text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="isReleasingHold(held.deviceId)"
-            @click="handleReleaseResetHold(held.deviceId)"
-          >
-            {{ isReleasingHold(held.deviceId) ? t('book.detail.details.resetHoldReleasing') : t('book.detail.details.resetHoldRelease') }}
-          </button>
-          <p v-if="hasReleaseFailed(held.deviceId)" role="alert" class="text-[11px] text-destructive">
-            {{ t('book.detail.details.resetHoldReleaseFailed') }}
-          </p>
-        </div>
-      </div>
-      <Tooltip v-if="koboAnomaly">
-        <TooltipTrigger as-child>
-          <div class="mt-2 flex items-center gap-1.5 cursor-help" tabindex="0">
-            <TriangleAlert class="size-3 text-amber-500 shrink-0" />
-            <p class="text-[11px] text-amber-500">{{ koboAnomaly.label }}</p>
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>{{ koboAnomaly.tooltip }}</TooltipContent>
-      </Tooltip>
     </div>
 
     <!-- Main column -->
-    <div class="flex min-w-0 flex-col gap-2.5 xl:col-start-2 xl:row-start-1 xl:min-h-0 xl:overflow-y-auto">
-      <div class="hidden xl:block">
+    <div
+      class="flex min-w-0 flex-col gap-2.5 @min-[46rem]/book-detail:col-start-2 @min-[46rem]/book-detail:row-start-1 @min-[46rem]/book-detail:min-h-0 @min-[46rem]/book-detail:overflow-y-auto"
+    >
+      <div class="hidden @min-[46rem]/book-detail:block">
         <!-- Identity block -->
         <div class="flex items-center flex-wrap gap-x-3 gap-y-2 -mt-1">
           <h1 class="text-2xl font-bold leading-tight">{{ book.title ?? t('book.detail.details.untitled') }}</h1>
@@ -1816,7 +1840,6 @@ watch(
       </div>
 
       <section class="rounded-xl border border-border bg-card px-4 py-3.5">
-        <!-- Synopsis. Expanding scrolls inside this block, never the column. -->
         <div>
           <div class="flex items-baseline gap-3">
             <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1824,7 +1847,10 @@ watch(
             </p>
             <button
               v-if="book.description"
+              type="button"
               class="ml-auto shrink-0 text-[11px] font-semibold text-primary transition-colors hover:underline"
+              :aria-controls="`book-${book.id}-synopsis`"
+              :aria-expanded="descriptionExpanded"
               @click="toggleDescription"
             >
               {{ descriptionExpanded ? t('book.detail.details.showLess') : t('book.detail.details.showMore') }}
@@ -1832,8 +1858,10 @@ watch(
           </div>
           <div
             v-if="book.description"
+            :id="`book-${book.id}-synopsis`"
+            data-test="synopsis-copy"
             class="mt-2 text-sm leading-relaxed text-foreground"
-            :class="descriptionExpanded ? 'max-h-44 overflow-y-auto pr-2' : 'line-clamp-4'"
+            :class="{ 'synopsis-copy--clamped': !descriptionExpanded }"
             v-html="safeDescription"
           />
           <p v-else class="mt-2 text-sm italic text-muted-foreground">{{ t('book.detail.details.noDescription') }}</p>
@@ -1848,7 +1876,7 @@ watch(
           <button
             type="button"
             class="ml-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-input px-2.5 text-xs font-medium transition-colors hover:bg-muted"
-            @click="startPersonalNoteEdit"
+            @click="startVisiblePersonalNoteEdit"
           >
             <Pencil class="size-3" />
             {{ t('book.detail.details.writeReview') }}
@@ -1856,13 +1884,20 @@ watch(
         </div>
       </section>
 
-      <BookReadingActivityCard class="xl:min-h-0 xl:flex-1" :stats="readingStats" :sessions="readingSessions" :loading="readingLogLoading" />
+      <BookReadingActivityCard
+        class="@min-[46rem]/book-detail:flex-1"
+        :stats="readingStats"
+        :sessions="readingSessions"
+        :loading="readingLogLoading"
+      />
     </div>
 
     <!-- Detail rail -->
-    <div class="flex min-w-0 flex-col gap-3 xl:col-start-3 xl:row-start-1 xl:min-h-0 xl:overflow-y-auto">
+    <div
+      class="flex min-w-0 flex-col gap-3 @min-[46rem]/book-detail:col-start-3 @min-[46rem]/book-detail:row-start-1 @min-[46rem]/book-detail:min-h-0 @min-[46rem]/book-detail:overflow-y-auto"
+    >
       <section
-        class="flex min-h-0 flex-col rounded-xl border border-border bg-card px-4 pb-2 pt-3 xl:flex-1"
+        class="flex min-h-0 flex-col rounded-xl border border-border bg-card px-4 pt-3 pb-2 @min-[46rem]/book-detail:flex-1"
         :aria-label="t('book.detail.details.detailsHeading')"
       >
         <h3 class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1870,7 +1905,7 @@ watch(
         </h3>
 
         <dl class="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.publisher') }}</dt>
             <template v-if="book.publisher">
               <Tooltip>
@@ -1882,37 +1917,37 @@ watch(
             </template>
             <dd v-else class="truncate text-[13px] font-medium">-</dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.published') }}</dt>
             <dd class="truncate text-[13px] font-medium">
               {{ book.publishedDate ? formatDisplayDate(book.publishedDate) : book.publishedYear || '-' }}
             </dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.language') }}</dt>
             <dd class="truncate text-[13px] font-medium capitalize">{{ book.language || '-' }}</dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.pages') }}</dt>
             <dd class="truncate text-[13px] font-medium">{{ book.pageCount || '-' }}</dd>
           </div>
           <div
             v-if="book.audioMetadata?.durationSeconds != null"
-            class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0"
+            class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0"
           >
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.duration') }}</dt>
             <dd class="truncate text-[13px] font-medium">{{ formatDuration(book.audioMetadata.durationSeconds) }}</dd>
           </div>
           <div
             v-if="book.audioMetadata?.durationSeconds != null"
-            class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0"
+            class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0"
           >
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.edition') }}</dt>
             <dd class="truncate text-[13px] font-medium">
               {{ book.audioMetadata.abridged ? t('book.detail.details.abridged') : t('book.detail.details.unabridged') }}
             </dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.isbn') }}</dt>
             <dd v-if="book.isbn13 || book.isbn10" class="truncate text-right text-[13px] font-medium font-mono">
               <div v-if="book.isbn13">{{ book.isbn13 }}</div>
@@ -1920,15 +1955,15 @@ watch(
             </dd>
             <dd v-else class="truncate text-[13px] font-medium">-</dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.fileSize') }}</dt>
             <dd class="truncate text-[13px] font-medium">{{ formatFileSize(primaryFile?.sizeBytes) }}</dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.library') }}</dt>
             <dd class="truncate text-[13px] font-medium">{{ book.libraryName || '-' }}</dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.added') }}</dt>
             <template v-if="editingAddedDate">
               <dd class="mt-1">
@@ -1987,7 +2022,7 @@ watch(
           </div>
           <HardcoverBookSyncGridItem :book-id="book.id" />
           <StorygraphBookSyncGridItem :book-id="book.id" />
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.dateStarted') }}</dt>
             <template v-if="isEditingReadingDate('startedAt')">
               <dd class="mt-1">
@@ -2030,7 +2065,7 @@ watch(
               </button>
             </dd>
           </div>
-          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[7px] last:border-b-0">
+          <div class="flex items-baseline justify-between gap-3 border-b border-border py-[6px] last:border-b-0">
             <dt class="shrink-0 text-[11px] font-medium text-muted-foreground">{{ t('book.detail.details.dateFinished') }}</dt>
             <template v-if="isEditingReadingDate('finishedAt')">
               <dd class="mt-1">
@@ -2101,7 +2136,7 @@ watch(
     </div>
 
     <!-- Discovery shelf -->
-    <div class="min-w-0 xl:col-span-3 xl:row-start-2 xl:min-h-0">
+    <div data-test="discovery-shelf" class="min-w-0 @min-[46rem]/book-detail:col-span-3 @min-[46rem]/book-detail:row-start-2">
       <DiscoverRow class="h-full" :book-id="book.id" :series-name="book.seriesName" :author-count="book.authors.length" size="lg" flush />
     </div>
   </div>
@@ -2160,3 +2195,24 @@ watch(
     </DialogPortal>
   </DialogRoot>
 </template>
+
+<style scoped>
+.synopsis-copy--clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+@media (min-height: 56rem) {
+  .synopsis-copy--clamped {
+    -webkit-line-clamp: 6;
+  }
+}
+
+@media (min-height: 80rem) {
+  .synopsis-copy--clamped {
+    -webkit-line-clamp: 10;
+  }
+}
+</style>
