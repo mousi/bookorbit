@@ -29,12 +29,12 @@ UPSTREAM_TAG=v2.6.0
 CUSTOM_TAG=v2.6.0-kostas
 BRANCH="sync/${CUSTOM_TAG}"
 
-# Start from the previous private tag.
-git switch --detach "$LAST_CUSTOM_TAG"
+# Start from the new upstream release.
+git switch --detach "$UPSTREAM_TAG"
 git switch -c "$BRANCH"
 
-# Bring in the upstream release.
-git merge --no-edit "$UPSTREAM_TAG"
+# Bring in the previous private patch.
+git merge --no-edit "$LAST_CUSTOM_TAG"
 ```
 
 If Git reports conflicts, resolve them while preserving the catalog sorting
