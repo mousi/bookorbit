@@ -26,7 +26,7 @@ git fetch upstream --tags
 
 LAST_CUSTOM_TAG=v2.5.0-kostas
 UPSTREAM_TAG=v2.6.0
-CUSTOM_TAG=v2.6.0-kostas
+CUSTOM_TAG=${UPSTREAM_TAG}-kostas
 BRANCH="sync/${CUSTOM_TAG}"
 
 # Start from the new upstream release.
