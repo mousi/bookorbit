@@ -1,9 +1,9 @@
 # Maintaining the private KOReader plugin patch
 
 This directory contains a small local patch to the BookOrbit KOReader plugin.
-The patch is kept in a custom tag and copied to the Docker host through
-`sync-to-docker-host.sh`. The Docker deployment must bind-mount the destination
-directory over `/app/koreader-plugin/bookorbit.koplugin`.
+The patch is kept in a custom tag and copied into the k3s cluster through
+`sync-to-k3s.sh`. The `bookorbit-app` deployment mounts the `bookorbit-koplugin`
+PVC over `/app/koreader-plugin/bookorbit.koplugin`.
 
 The repository remotes used by this workflow are:
 
@@ -58,8 +58,8 @@ Create the custom tag, then remove the temporary branch as planned:
 ```bash
 git tag -a "$CUSTOM_TAG" -m "BookOrbit $CUSTOM_TAG with persistent KOReader sorting"
 git push origin "$CUSTOM_TAG"
-git branch -D "$BRANCH"
 git switch --detach "$CUSTOM_TAG"
+git branch -D "$BRANCH"
 ```
 
 The tag is pushed to your fork (`origin`) so it remains available when you
@@ -72,56 +72,48 @@ git ls-remote --tags origin "$CUSTOM_TAG"
 Do not reuse an upstream tag name. The custom suffix makes it clear which tag
 contains the private patch.
 
-## Sync the plugin to the Docker host
+## Sync the plugin to k3s
 
 From this directory, run:
 
 ```bash
 cd /Users/kostas/dev/bookorbit/koreader-plugin
-./sync-to-docker-host.sh
+./sync-to-k3s.sh
 ```
 
-The script synchronizes the local plugin to:
+The script starts a short-lived `busybox` helper pod that mounts the
+`bookorbit-koplugin` PVC, streams the local plugin into it with the Mac's `tar`
+over `kubectl exec`, prints the synced `PLUGIN_VERSION`, and deletes the helper
+pod. It does not depend on the app pod, so it also works while the app is down
+or scaled to zero. Files removed upstream are also removed from the PVC.
 
-```text
-kostas@10.0.3.3:/home/kostas/dev/docker/bookorbit/bookorbit.koplugin
-```
+The PVC lives on TrueNAS under `/mnt/storage/k8s-dynamic/`. Its NFS share maps
+every write to `k3s:media`, so synced files keep the expected ownership without
+SSH or sudo on TrueNAS.
 
-It streams the local plugin with the Mac's `tar` over SSH, then extracts it on
-the Docker host. No `rsync` installation is required on the Docker host. Files
-removed upstream are also removed from the mounted Docker directory. The
-script does not rebuild the Docker image or restart the container. A
-bind-mounted plugin is visible to the running container immediately; restart
-the `app` service only if the running process has already cached the package
-contents:
+The script does not restart the app. The server reads the plugin from disk on
+each download, so a restart is only needed if the running process has cached
+the package contents:
 
 ```bash
-ssh kostas@10.0.3.3 \
-  'cd /home/kostas/dev/docker/bookorbit && docker compose restart app'
+kubectl --context k3s-homelab -n bookorbit rollout restart deploy/bookorbit-app
 ```
 
 ## Optional checks
 
-Confirm the remote files after syncing:
+Confirm the files from the app pod after syncing:
 
 ```bash
-ssh kostas@10.0.3.3 \
-  'find /home/kostas/dev/docker/bookorbit/bookorbit.koplugin -maxdepth 1 -type f -print | sort'
+kubectl --context k3s-homelab -n bookorbit exec deploy/bookorbit-app -- \
+  ls -l /app/koreader-plugin/bookorbit.koplugin
 ```
 
-Confirm that the plugin version in the synced source is the expected one:
+The sync script accepts these environment overrides when the cluster changes:
 
 ```bash
-ssh kostas@10.0.3.3 \
-  "grep '^local PLUGIN_VERSION' /home/kostas/dev/docker/bookorbit/bookorbit.koplugin/main.lua"
-```
-
-The sync script accepts these environment overrides when the host or path
-changes:
-
-```bash
-REMOTE_USER=kostas \
-REMOTE_HOST=10.0.3.3 \
-REMOTE_PLUGIN_DIR=/home/kostas/dev/docker/bookorbit/bookorbit.koplugin \
-./sync-to-docker-host.sh
+KUBE_CONTEXT=k3s-homelab \
+NAMESPACE=bookorbit \
+PVC_NAME=bookorbit-koplugin \
+HELPER_IMAGE=busybox:1.37 \
+./sync-to-k3s.sh
 ```
