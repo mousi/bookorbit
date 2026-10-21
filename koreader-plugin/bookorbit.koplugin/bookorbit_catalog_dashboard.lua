@@ -184,6 +184,11 @@ function CatalogDashboard:dashboardRootFetch(opts)
                 params.readStatus = "reading"
             elseif DashboardSections.isCatalogSelector(config.type) then
                 for key, value in pairs(config.params or {}) do params[key] = value end
+                -- The dashboard stores the selected source, while ordering is
+                -- remembered separately for each source.
+                local preference = self:sortPreference(params)
+                params.sort = preference.sort or params.sort or self.default_sort
+                params.order = preference.order or params.order
             else
                 return nil
             end
